@@ -1,0 +1,16 @@
+[project]
+name = "laser-track"
+version = "0.1.0"
+description = "Graphical interface for laser path extraction and fitting analyisis"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.2",
+    "opencv-python>=4.13.0.92",
+    "pandas>=2.3.3",
+    "pillow>=12.1.1",
+    "scipy>=1.17.0",
+    "streamlit>=1.40.0",
+    "streamlit-drawable-canvas>=0.9.3",
+]
