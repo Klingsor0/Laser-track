@@ -1,6 +1,6 @@
 # Laser Track
 
-From a photograph of an optical experimental arrange extracts the laser path guided by the user. It also does a fitting analyisis with a presrcibed geometry. 
+From a photograph of an optical experimental arrangement extracts the laser path guided by the user. It also does a fitting analyisis with a presrcibed geometry. 
 The edge algorithm is an active components greedy algorithm. 
 It is planned to implement in the future to work with live cameras.
 
