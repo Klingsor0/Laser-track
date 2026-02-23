@@ -87,6 +87,39 @@ def quadratic_spline_roots(spl):
         roots.extend(t*(b-a)/2 + (b+a)/2)
     return np.array(roots)
 
+def model_branch(a,R, x):
+    #return 2*26.6 -a * R**4 / x**2
+    return [2*a*R**2 *(1 - R**2 / (2 *abs(xi)**2)) for xi in x]
+
+def rss_model(function1, function2, mask, x, y):
+    """
+    Introduce two functions, a mask and a list of real data, compute the residuals
+    """
+    estimated1 = function1(x[mask(x)])
+    estimated2 = function2(x[~mask(x)])
+    residues1 =  [ (yi[0] - yi[1])**2 for yi in zip(estimated1, y[mask(x)])]
+    residues2 =  [ (yi[0] - yi[1])**2 for yi in zip(estimated2, y[~mask(x)])]
+    return list(set(residues1 + residues2))
+
+def min_rss(function1, function2, x, y, R_d, window, steps):
+    """
+    Hallar el parametro que minimiza la suma de residuos cuadraticos
+    """
+    # se propone un minimo 
+    Rmin = R_d
+    radius_mask_rmin = lambda z: (z >= min_pt[1] - Rmin) & (z <= min_pt[1] + Rmin)
+    function2_r = lambda z: function2(z, Rmin)
+    rss_min = sum(rss_model(function1, function2_r, radius_mask_rmin, x, y))
+    looking_domain = np.linspace(R_d-window, R_d +window, steps)
+    for ri in looking_domain:
+        radius_mask_ri = lambda z: (z >= min_pt[1] - ri) & (z <= min_pt[1] + ri)
+        function2_r = lambda z: function2(z, ri)
+        rss_i = sum(rss_model(function1, function2_r, radius_mask_ri, x, y))
+        if rss_i < rss_min:
+            rss_min = rss_i
+            Rmin = ri
+    return Rmin
+
 # ============= REUSABLE PLOT FUNCTION =============
 def create_curve_analysis_plot(x, y, x_range, y_spl, y_spl_1, min_pt, critic_pts,
                                mod_parab, radius_mask, R, model_branch):
@@ -669,23 +702,24 @@ with tab4:
         d = abs(min_pt[1] - pt)
         R_d = d if d<R_d else R_d
 
+    radius_mask = lambda z: (z >= min_pt[1] - R_d) & (z <= min_pt[1] + R_d)
+    mod_parab = modelo_parabolico(x[radius_mask(x)], y[radius_mask(x)])
 
-    def model_branch(a,R, x):
-        #return 2*26.6 -a * R**4 / x**2
-        return [2*a*R**2 *(1 - R**2 / (2 *abs(xi)**2)) for xi in x]
+    mb_1 = lambda z: mod_parab.predict(z)  
+    mb_2 = lambda z, r: model_branch(mod_parab._coeficientes[2], r, z - min_pt[1])
+
+    R = min_rss(mb_1, mb_2, x, y, R_d, 20.0, 100)
+
 
     # Add slider above the plot
-    R = st.slider("Radius parameter (R)",
-                  min_value=5.0,
-                  max_value=max(x),
-                  value=R_d,
-                  step=1.0,
-                  help="Adjust the radius for parabolic model fitting")
-
-
-    radius_mask = lambda z: (z >= min_pt[1] - R) & (z <= min_pt[1] + R)
-    mod_parab = modelo_parabolico(x[radius_mask(x)], y[radius_mask(x)])
+#    R = st.slider("Radius parameter (R)",
+#                  min_value=5.0,
+#                  max_value=max(x),
+#                  value=R_d,
+#                  step=1.0,
+#                  help="Adjust the radius for parabolic model fitting")
 #
+
     #################### PLOTLY ##################
     fig = create_curve_analysis_plot(
         x, y, x_range, y_spl, y_spl_1, 
