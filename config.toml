@@ -1,0 +1,9 @@
+[theme]
+primaryColor = "#6EBA31"        # Bright green (color6)
+backgroundColor = "#060807"     # Deep black (background)
+secondaryBackgroundColor = "#30394A"  # Blue-gray panels (color3)
+textColor = "#c4e49a"           # Light green text (foreground)
+font = "sans serif"
+
+[server]
+headless = true

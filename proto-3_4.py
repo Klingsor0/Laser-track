@@ -1,4 +1,5 @@
 import streamlit as st
+import plotly.graph_objects as go
 # import importlib
 import cv2 as cv
 import numpy as np
@@ -12,10 +13,18 @@ from utils import snake1 as snk
 from utils.models import modelo_parabolico
 from scipy.interpolate import UnivariateSpline
 
-#importlib.reload(utils)
-#importlib.reload(utils.snake)
-# CARGA DE IMAGEN
-# hay dos opciones o cargar la imagen en openCV y transformarla a objeto pil o al revés.
+THEME = {
+    'bg': '#060807',
+    'panel': '#30394A',
+    'text': '#c4e49a',
+    'text_dim': '#899f6b',
+    'primary': '#6EBA31',      # Lime green
+    'secondary': '#509A24',    # Bright green
+    'accent': '#368912',       # Medium green
+    'dark_green': '#335926',
+    'forest': '#447130',
+    'grid': 'rgba(68, 113, 48, 0.2)',  # Forest with transparency
+}
 
 @st.cache_data
 def load_img(uploaded):
@@ -78,7 +87,334 @@ def quadratic_spline_roots(spl):
         roots.extend(t*(b-a)/2 + (b+a)/2)
     return np.array(roots)
 
+# ============= REUSABLE PLOT FUNCTION =============
+def create_curve_analysis_plot(x, y, x_range, y_spl, y_spl_1, min_pt, critic_pts,
+                               mod_parab, radius_mask, R, model_branch):
+    """
+    Create a themed Plotly figure for curve analysis
+    """
+    fig = go.Figure()
+
+    # Data points
+    fig.add_trace(go.Scatter(
+        x=x, y=y,
+        mode='markers',
+        marker=dict(size=8, color=THEME['secondary'], opacity=0.7,
+                   line=dict(color=THEME['primary'], width=0.5)),
+        name='Data points'
+    ))
+
+    # Spline fit
+    fig.add_trace(go.Scatter(
+        x=x_range, y=y_spl(x_range),
+        mode='lines',
+        line=dict(width=3, color=THEME['primary']),
+        name='Spline fit'
+    ))
+
+    # First derivative (scaled)
+    fig.add_trace(go.Scatter(
+        x=x_range, y=100*y_spl_1(x_range) + 40,
+        mode='lines',
+        line=dict(width=1.5, color=THEME['text_dim'], dash='dash'),
+        opacity=0.7,
+        name='Spline derivative (×100, offset)'
+    ))
+
+    # Minimum point
+    fig.add_trace(go.Scatter(
+        x=[min_pt[1]], y=[y_spl(min_pt[1])],
+        mode='markers',
+        marker=dict(
+            size=14,
+            color=THEME['accent'],
+            symbol='triangle-down',
+            line=dict(color=THEME['text'], width=2)
+        ),
+        name='Minimum'
+    ))
+
+    # Critical points
+    fig.add_trace(go.Scatter(
+        x=critic_pts, y=y_spl(critic_pts),
+        mode='markers',
+        marker=dict(
+            size=12,
+            color=THEME['forest'],
+            symbol='diamond',
+            line=dict(color=THEME['text'], width=1.5)
+        ),
+        name='Critical points'
+    ))
+
+    # Parabolic model
+    x_parab = x_range[radius_mask(x_range)]
+    fig.add_trace(go.Scatter(
+        x=x_parab, y=mod_parab.predict(x_parab),
+        mode='lines',
+        line=dict(width=2.5, color=THEME['dark_green'], dash='dashdot'),
+        name='Parabolic model'
+    ))
+
+    # Branch model
+    x_branch = x_range[~radius_mask(x_range)]
+    fig.add_trace(go.Scatter(
+        x=x_branch,
+        y=model_branch(mod_parab._coeficientes[2], R, x_branch - min_pt[1]),
+        mode='lines',
+        line=dict(width=2.5, color=THEME['dark_green'], dash='dashdot'),
+        name='Branch model',
+        showlegend=False
+    ))
+
+    # Apply themed layout
+    fig.update_layout(
+        title={
+            'text': 'Curve Fitting and Critical Point Analysis',
+            'font': {'size': 18, 'family': 'monospace', 'color': THEME['primary']},
+            'x': 0.5,
+            'xanchor': 'center'
+        },
+        paper_bgcolor=THEME['bg'],
+        plot_bgcolor=THEME['panel'],
+        font=dict(color=THEME['text'], family='monospace'),
+        xaxis=dict(
+            title=dict(text='x coordinate (pixels)',
+                      font=dict(size=13, color=THEME['primary'])),
+            range=[x_range.min() - 5, x_range.max() + 5],
+            showgrid=True,
+            #gridcolor=THEME['grid'],
+            gridwidth=1,
+            zeroline=False,
+            tickfont=dict(color=THEME['text'])
+        ),
+        yaxis=dict(
+            title=dict(text='y coordinate (pixels)',
+                      font=dict(size=13, color=THEME['primary'])),
+            range=[y.min() - 10, y.max() + 10],
+            showgrid=True,
+            #gridcolor=THEME['grid'],
+            gridwidth=1,
+            zeroline=False,
+            tickfont=dict(color=THEME['text'])
+        ),
+        legend=dict(
+            x=1.02,
+            y=1,
+            bgcolor='rgba(48, 57, 74, 0.95)',
+            bordercolor=THEME['forest'],
+            borderwidth=1,
+            font=dict(color=THEME['text'], size=11)
+        ),
+        hovermode='closest',
+        width=900,
+        height=600,
+        margin=dict(l=60, r=150, t=80, b=60)
+    )
+
+    return fig
+
 st.set_page_config(layout='wide')
+# Custom CSS
+st.markdown("""
+<style>
+    /* Main background */
+    .stApp {
+        background-color: #060807;
+        color: #c4e49a;
+    }
+    
+    /* Sidebar */
+    [data-testid="stSidebar"] {
+        background-color: #30394A;
+        border-right: 2px solid #6EBA31;
+    }
+    
+    /* Headers */
+    h1 {
+        color: #6EBA31 !important;
+        text-shadow: 0 0 15px rgba(110, 186, 49, 0.5);
+    }
+    
+    h2 {
+        color: #509A24 !important;
+    }
+    
+    h3 {
+        color: #c4e49a !important;
+    }
+    
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background-color: #30394A;
+        border-radius: 8px;
+        padding: 4px;
+    }
+    
+    .stTabs [data-baseweb="tab"] {
+        background-color: transparent;
+        border-radius: 4px;
+        color: #c4e49a;
+        font-weight: 500;
+    }
+    
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(90deg, #447130 0%, #509A24 100%);
+        color: #c4e49a !important;
+        box-shadow: 0 0 10px rgba(110, 186, 49, 0.3);
+    }
+    
+    /* Buttons */
+    .stButton button {
+        background: linear-gradient(90deg, #447130 0%, #6EBA31 100%);
+        color: #060807;
+        border: none;
+        border-radius: 8px;
+        font-weight: bold;
+        box-shadow: 0 0 15px rgba(110, 186, 49, 0.4);
+        transition: all 0.3s;
+    }
+    
+    .stButton button:hover {
+        background: linear-gradient(90deg, #509A24 0%, #6EBA31 100%);
+        box-shadow: 0 0 25px rgba(110, 186, 49, 0.6);
+        transform: translateY(-2px);
+    }
+    
+    /* Primary button */
+    .stButton button[kind="primary"] {
+        background: linear-gradient(90deg, #368912 0%, #509A24 100%);
+        box-shadow: 0 0 20px rgba(80, 154, 36, 0.5);
+    }
+    
+    /* Sliders */
+    .stSlider [data-baseweb="slider"] [role="slider"] {
+        background-color: #6EBA31;
+    }
+    
+    .stSlider [data-baseweb="slider"] [data-testid="stTickBar"] > div {
+        background: linear-gradient(90deg, #335926 0%, #6EBA31 100%);
+    }
+    
+    /* Metrics */
+    [data-testid="stMetricValue"] {
+        color: #6EBA31;
+        font-size: 2rem;
+        text-shadow: 0 0 10px rgba(110, 186, 49, 0.5);
+    }
+    
+    [data-testid="stMetricDelta"] {
+        color: #509A24;
+    }
+    
+    /* Dataframes */
+    .stDataFrame {
+        border: 1px solid #447130;
+        border-radius: 8px;
+    }
+    
+    /* Text inputs */
+    .stTextInput input, .stNumberInput input {
+        background-color: #30394A;
+        color: #c4e49a;
+        border: 1px solid #447130;
+    }
+    
+    .stTextInput input:focus, .stNumberInput input:focus {
+        border-color: #6EBA31;
+        box-shadow: 0 0 10px rgba(110, 186, 49, 0.3);
+    }
+    
+    /* Select boxes */
+    .stSelectbox [data-baseweb="select"] {
+        background-color: #30394A;
+        border-color: #447130;
+    }
+    
+    /* Info/Success/Warning boxes */
+    .stAlert {
+        background-color: #30394A;
+        border-left: 4px solid #6EBA31;
+        color: #c4e49a;
+    }
+    
+    /* Success */
+    [data-baseweb="notification"][kind="success"] {
+        background-color: #335926;
+        border-left: 4px solid #509A24;
+    }
+    
+    /* Warning */
+    [data-baseweb="notification"][kind="warning"] {
+        background-color: #30394A;
+        border-left: 4px solid #368912;
+    }
+    
+    /* Code blocks */
+    .stCodeBlock {
+        background-color: #30394A !important;
+        border: 1px solid #447130;
+        border-radius: 8px;
+    }
+    
+    /* Expander */
+    .streamlit-expanderHeader {
+        background-color: #30394A;
+        color: #c4e49a;
+        border: 1px solid #447130;
+    }
+    
+    /* Progress bar */
+    .stProgress > div > div {
+        background: linear-gradient(90deg, #335926 0%, #6EBA31 100%);
+    }
+    
+    /* File uploader */
+    [data-testid="stFileUploadDropzone"] {
+        background-color: #30394A;
+        border: 2px dashed #447130;
+    }
+    
+    [data-testid="stFileUploadDropzone"]:hover {
+        border-color: #6EBA31;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Your color palette
+COLORS = {
+    'background': '#060807',
+    'foreground': '#c4e49a',
+    'color0': '#060807',   # Black
+    'color1': '#335926',   # Dark green
+    'color2': '#447130',   # Forest green
+    'color3': '#30394A',   # Blue-gray
+    'color4': '#368912',   # Medium green
+    'color5': '#509A24',   # Bright green
+    'color6': '#6EBA31',   # Lime green
+    'color7': '#c4e49a',   # Light green
+    'color8': '#899f6b',   # Muted green
+}
+
+# Semantic naming for easier use
+THEME = {
+    'bg': '#060807',
+    'panel': '#30394A',
+    'text': '#c4e49a',
+    'text_dim': '#899f6b',
+    'primary': '#6EBA31',
+    'secondary': '#509A24',
+    'accent': '#368912',
+    'dark_green': '#335926',
+    'forest': '#447130',
+}
+
+#importlib.reload(utils)
+#importlib.reload(utils.snake)
+# CARGA DE IMAGEN
+# hay dos opciones o cargar la imagen en openCV y transformarla a objeto pil o al revés.
+
 #st.set_page_config(page_title="Image Processing Pipeline", layout="wide")
 # tabs
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -327,64 +663,34 @@ with tab4:
     min_pt = y_spl_1.roots()
     critic_pts = quadratic_spline_roots(y_spl_2)
 
-    R = abs(min_pt[1] - critic_pts[0])
+
+    R_d = abs(min_pt[1] - critic_pts[0])
     for pt in critic_pts:
         d = abs(min_pt[1] - pt)
-        R = d if d<R else R
-    radius_mask = lambda z: (z >= min_pt[1] - R) & (z <= min_pt[1] + R)
+        R_d = d if d<R_d else R_d
 
-    mod_parab = modelo_parabolico(x[radius_mask(x)], y[radius_mask(x)])
 
     def model_branch(a,R, x):
+        #return 2*26.6 -a * R**4 / x**2
         return [2*a*R**2 *(1 - R**2 / (2 *abs(xi)**2)) for xi in x]
 
-    fig, ax = plt.subplots(figsize=(10, 6))
-
-    # Data points
-    ax.scatter(x, y, s=30, alpha=0.6, color='#2E86AB', label='Data points', zorder=3)
-
-    # Spline fit
-    ax.plot(x_range, y_spl(x_range), linewidth=2, color='black', label='Spline fit', zorder=2)
-
-    # First derivative (scaled for visibility)
-    ax.plot(x_range, 100*y_spl_1(x_range) + 40, linewidth=1.5, 
-            linestyle='--', color='gray', alpha=0.7, label="Spline derivative (×100, offset)")
-
-    # Critical points
-    ax.scatter(min_pt[1], y_spl(min_pt[1]), s=100, color='#A23B72', 
-               marker='v', label='Minimum', zorder=4, edgecolors='black', linewidths=1.5)
-    ax.scatter(critic_pts, y_spl(critic_pts), s=80, color='#F18F01', 
-               marker='D', label='Critical points', zorder=4, edgecolors='black', linewidths=1)
-
-    # Parabolic model
-    x_parab = x_range[radius_mask(x_range)]
-    ax.plot(x_parab, mod_parab.predict(x_parab), linewidth=2.5, 
-            color='#C73E1D', linestyle='-.', label='Parabolic model', zorder=2)
-
-    # Branches model
-    x_branch = x_range[~radius_mask(x_range)]
-    ax.plot(x_branch, model_branch(mod_parab._coeficientes[2], R, x_branch - min_pt[1] ), linewidth=2.5, 
-            color='#C73E1D', linestyle='-.', label='Branch model', zorder=2)
+    # Add slider above the plot
+    R = st.slider("Radius parameter (R)",
+                  min_value=5.0,
+                  max_value=max(x),
+                  value=R_d,
+                  step=1.0,
+                  help="Adjust the radius for parabolic model fitting")
 
 
-    # Labels and styling
-    ax.set_xlabel('x coordinate (pixels)', fontsize=12, fontweight='bold')
-    ax.set_ylabel('y coordinate (pixels)', fontsize=12, fontweight='bold')
-    ax.set_title('Curve Fitting and Critical Point Analysis', fontsize=14, fontweight='bold', pad=15)
+    radius_mask = lambda z: (z >= min_pt[1] - R) & (z <= min_pt[1] + R)
+    mod_parab = modelo_parabolico(x[radius_mask(x)], y[radius_mask(x)])
+#
+    #################### PLOTLY ##################
+    fig = create_curve_analysis_plot(
+        x, y, x_range, y_spl, y_spl_1, 
+        min_pt, critic_pts, mod_parab, 
+        radius_mask, R, model_branch
+    )
 
-    # Grid
-    ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.5)
-
-    # Legend
-    ax.legend(loc='best', framealpha=0.9, fontsize=10, edgecolor='black')
-
-    # Fixed axis limits (no autoscale)
-    ax.set_xlim([x_range.min() - 5, x_range.max() + 5])
-    ax.set_ylim([y.min() - 10, y.max() + 10])
-
-    # Tight layout
-    plt.tight_layout()
-
-    st.pyplot(fig)
-    #st.write(mod_parab._coeficientes )
-
+    st.plotly_chart(fig, use_container_width=True)
