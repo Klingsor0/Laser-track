@@ -1,0 +1,9 @@
+[theme]
+primaryColor = "#00FF41"        # Neon green
+backgroundColor = "#0E1117"     # Dark background
+secondaryBackgroundColor = "#1E2130"  # Slightly lighter panels
+textColor = "#FAFAFA"           # Light text
+font = "sans serif"
+
+[server]
+headless = true

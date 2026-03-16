@@ -10,7 +10,9 @@ import pandas as pd
 from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
 from utils import snake1 as snk
+from utils.plots import plot_save_fig_profile_PR
 from utils.models import modelo_parabolico
+from utils.models import modelo_lineal
 from scipy.interpolate import UnivariateSpline
 
 THEME = {
@@ -450,11 +452,12 @@ THEME = {
 
 #st.set_page_config(page_title="Image Processing Pipeline", layout="wide")
 # tabs
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "1️⃣ Upload & ROI", 
     "2️⃣ Preprocessing", 
     "3️⃣ Edging Detection", 
-    "4️⃣ Analysis"
+    "4️⃣ Analysis", 
+    "Deflection Angle"
 ])
 
 # Inicialización de estado de sesión al parecer es una clase de entorno a la cual podemos asignarle nuevos valores
@@ -468,17 +471,140 @@ if 'filtered_image' not in st.session_state:
     st.session_state.filtered_image = None
 if 'edges' not in st.session_state:
     st.session_state.edges = None
-
+if 'calibration' not in st.session_state:
+    st.session_state.calibration = None
 
 #========== ROI===========
 with tab1:
-    st.subheader("Select ROI")
-    st.text("Right click for closing the polygon and saving it")
-
     uploaded = st.file_uploader("imagen para analizar", type=["jpg", "png"])
+
+    st.markdown("---")
+    st.subheader("Spatial Calibration")
+
+    # Instructions
+    with st.expander("📏 Calibration Instructions", expanded=False):
+        st.markdown("""
+        **How to calibrate:**
+        1. Draw a **line** along a known distance in your upload
+        2. Enter the **real-world measurement**
+        3. Click **"Set Calibration"**
+
+        💡 Choose a clear reference (ruler, known object size, scale bar)
+        """)
+
+    # Layout: Canvas + Controls
+    col_canvas, col_controls = st.columns([2, 1])
+
+    with col_canvas:
+        st.write("**Draw reference line on ROI:**")
+
+        # Prepare ROI image for canvas
+        if st.session_state.original_image is not None:
+            roi_for_calib = st.session_state.original_image.copy()
+            if len(roi_for_calib.shape) == 2:
+                roi_for_calib = cv.cvtColor(roi_for_calib, cv.COLOR_GRAY2RGB)
+
+            img_calib_pil = Image.fromarray(roi_for_calib)
+
+            # Calibration canvas
+            canvas_calib = st_canvas(
+                fill_color="rgba(0, 0, 0, 0)",
+                stroke_width=3,
+                stroke_color="#6EBA31",
+                background_image=img_calib_pil,
+                update_streamlit=True,
+                height=img_calib_pil.height,
+                width=img_calib_pil.width,
+                drawing_mode="line",
+                key="canvas_calibration",
+            )
+
+            with col_controls:
+                st.write("**Parameters:**")
+
+                # Reference measurement
+                reference_value = st.number_input(
+                    "Known distance",
+                    min_value=0.001,
+                    value=10.0,
+                    step=0.1,
+                    format="%.3f"
+                )
+
+                unit = st.selectbox(
+                    "Unit",
+                    ["mm", "cm", "m", "µm", "inches"],
+                    index=0
+                )
+
+                st.markdown("---")
+
+                # Calculate if line drawn
+                if canvas_calib.json_data is not None:
+                    objects = canvas_calib.json_data.get("objects", [])
+
+                    if len(objects) > 0:
+                        # Get last drawn line
+                        line = objects[-1]
+                        if line.get("type") == "line":
+                            x1, y1 = line["x1"], line["y1"]
+                            x2, y2 = line["x2"], line["y2"]
+
+                            pixel_distance = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+
+                            st.metric("Line length", f"{pixel_distance:.1f} px")
+
+                            if pixel_distance > 0:
+                                scale = reference_value / pixel_distance
+
+                                st.info(f"**Scale:**\n{scale:.6f} {unit}/px")
+
+                                st.markdown("---")
+
+                                # Buttons
+                                if st.button("🎯 Set Calibration",
+                                           type="primary",
+                                           use_container_width=True):
+                                    st.session_state.calibration = {
+                                        'scale': scale,
+                                        'unit': unit,
+                                        'reference_value': reference_value,
+                                        'pixel_distance': pixel_distance,
+                                        'line_coords': (x1, y1, x2, y2)
+                                    }
+                                    st.success("✅ Calibration saved!")
+                                    st.rerun()
+
+                                if st.button("🔄 Redraw", use_container_width=True):
+                                    st.rerun()
+                            else:
+                                st.warning("Line too short")
+                        else:
+                            st.info("👆 Draw a line")
+                    else:
+                        st.info("👆 Draw a line")
+                else:
+                    st.info("👆 Draw a line")
+
+    # Display current calibration
+        if 'calibration' in st.session_state and st.session_state.calibration is not None:
+            st.markdown("---")
+            calib = st.session_state.calibration
+
+            col_status, col_actions = st.columns([3, 1])
+
+            with col_status:
+                st.success(f"""
+                ✅ **Calibration Active**
+                - Scale: **{calib['scale']:.6f} {calib['unit']}/pixel**
+                - Reference: {calib['reference_value']:.3f} {calib['unit']} = {calib['pixel_distance']:.1f} px
+                """)
 
     # SELECCIÓN DE ROI
     # https://github.com/SunOner/streamlit-drawable-canvas
+    st.subheader("Select ROI and calibration")
+    st.text("Right click for closing the polygon and saving it")
+
 
     alpha = 1/2 # factor de reduccion
     if uploaded is not None:
@@ -675,7 +801,7 @@ with tab3:
                     st.download_button(
                         "Download coordinates",
                         csv,
-                        "curve_coordinates.csv",
+                        "pruebas/curve_coordinates_2.csv",
                         "text/csv"
                     )
 
@@ -685,10 +811,11 @@ with tab3:
 with tab4:
     st.subheader("Curve analysis")
     
-    df = pd.read_csv('curve_coordinates.csv')
+    df = pd.read_csv('pruebas/curve_coordinates_2.csv')
+    st.write(scale)
     # st.write(df)
     x = df['x']
-    y = max(df['y']) -  df['y']
+    y = (max(df['y']) -  df['y'])
     y_spl = UnivariateSpline(x,y,s=None,k=4)
     y_spl_1 = y_spl.derivative(1)
     y_spl_2 = y_spl.derivative(2)
@@ -696,7 +823,7 @@ with tab4:
     min_pt = y_spl_1.roots()
     critic_pts = quadratic_spline_roots(y_spl_2)
 
-
+    # primera propuesta de punto critico basado en derivadas numericas
     R_d = abs(min_pt[1] - critic_pts[0])
     for pt in critic_pts:
         d = abs(min_pt[1] - pt)
@@ -707,24 +834,148 @@ with tab4:
 
     mb_1 = lambda z: mod_parab.predict(z)  
     mb_2 = lambda z, r: model_branch(mod_parab._coeficientes[2], r, z - min_pt[1])
-
-    R = min_rss(mb_1, mb_2, x, y, R_d, 20.0, 100)
-
-
-    # Add slider above the plot
-#    R = st.slider("Radius parameter (R)",
-#                  min_value=5.0,
-#                  max_value=max(x),
-#                  value=R_d,
-#                  step=1.0,
-#                  help="Adjust the radius for parabolic model fitting")
-#
+    # propuesta final con base en minimización de residuos
+    R_s = min_rss(mb_1, mb_2, x, y, R_d, 50.0, 200)
+    gamma = mod_parab._coeficientes[2]
+    
+    x_scaled = (x-min_pt[1]) / R_s
+    y_scaled = y/(2*gamma*R_s**2)
+    x_range_sc = np.linspace(- max(x_scaled), max(x_scaled))
+    def model_tot(x):
+        x = np.asarray(x)  # ensure array
+        y = np.empty_like(x, dtype=float)
+        mask = np.absolute(x)< 1
+        y[mask] = (1/2)* x[mask]**2       # formula for x < 1
+        y[~mask] =  1 - (1/2)* x[~mask]**-2    # example formula for x >= 1
+        return y
 
     #################### PLOTLY ##################
     fig = create_curve_analysis_plot(
         x, y, x_range, y_spl, y_spl_1, 
         min_pt, critic_pts, mod_parab, 
-        radius_mask, R, model_branch
+        radius_mask, R_s, model_branch
     )
-
     st.plotly_chart(fig, use_container_width=True)
+    st.write("escala adhoc", 11/R_s)
+    st.write("escala impuesta", scale)
+    st.write("gamma escalado adhoc", gamma*R_s/11)
+    st.write("gamma escalado impuesto", gamma/scale)
+    st.write("factor de perturbacion", 4*(gamma**2)*R_s**2 )
+    st.write("efecto de borde", -(0.5)*3.14*(4*(gamma**2)*R_s**8 )/ (85/scale)**6 )
+
+    with st.sidebar:
+        st.markdown("### 💾 Export")
+
+        with st.expander("Save Figure", expanded=False):
+            filename = st.text_input(
+                "Filename",
+                value="curve_analysis",
+                help="Enter name without extension"
+            )
+
+            file_format = st.radio(
+                "Format",
+                ["eps", "pdf", "tiff"],
+                horizontal=True
+            )
+
+            dpi = st.slider("DPI (quality)", 72, 600, 300, step=50)
+
+            if st.button("💾 Generate File", use_container_width=True, type="primary"):
+                full_filename = f"{filename}.{file_format}"
+
+                with st.spinner("Generating..."):
+                    plot_save_fig_profile_PR(x_scaled, y_scaled, x_range_sc, model_tot, full_filename, file_format)
+
+                    try:
+                        with open(full_filename, "rb") as file:
+                            st.download_button(
+                                label=f"⬇️ Download {full_filename}",
+                                data=file,
+                                file_name=full_filename,
+                                mime=f"image/{file_format[1:]}" if file_format != ".html" else "text/html",
+                                use_container_width=True
+                            )
+                        st.success("✅ Ready!")
+                    except FileNotFoundError:
+                        st.error(f"❌ Could not find {full_filename}")
+
+
+with tab5:
+    st.subheader("Curve analysis")
+    
+    angle_dat = pd.read_csv('pruebas/mediciones-prueba-2.csv')
+    st.write(angle_dat.keys())
+    st.write(angle_dat)
+
+    x_lineal = np.linspace(0 , 25)
+    x_a = angle_dat[angle_dat["espejo"]<11.2]["espejo"].tolist()
+    y_a = angle_dat[angle_dat["espejo"]<11.2]["angulo"].tolist()
+    mod_lineal = modelo_lineal(x_a, y_a)
+    x_a2 = angle_dat[angle_dat["espejo"]>11.2]["espejo"].tolist()
+    y_a2 = angle_dat[angle_dat["espejo"]>11.2]["angulo"].tolist()
+    mod_lineal2 = modelo_lineal(x_a2, y_a2)
+
+    st.write(mod_lineal.coeficiente)
+    #################### PLOTLY ##################
+    def model_ang(x, Rs, gamma):
+        x = np.asarray(x)  # ensure array
+        y = np.empty_like(x, dtype=float)
+        mask = np.absolute(x)>Rs
+        y[mask] =(gamma**2 * Rs**8 )* ( 5*3.14/8)/ x[mask]**6
+        y[~mask] = 4*gamma*x[~mask] #mod_line.predict(x[~mask])            
+        return y
+
+
+# ============= REUSABLE PLOT FUNCTION =============
+    fig2 = go.Figure()
+
+    # Data points
+    fig2.add_trace(go.Scatter(
+        x=angle_dat["espejo"], y=angle_dat["angulo"],
+        mode='markers',
+        marker=dict(size=8, color=THEME['secondary'], opacity=0.7,
+                   line=dict(color=THEME['primary'], width=0.5)),
+        name='Data points'
+    ))
+
+    # Parabolic model
+
+    fig2.add_trace(go.Scatter(
+        x=x_lineal, y=model_ang(x_lineal, 11.2, mod_lineal.coeficiente/4),
+        mode='lines',
+        line=dict(width=2.5, color=THEME['dark_green'], dash='dashdot'),
+        name='Parabolic model'
+    ))
+
+    # Apply themed layout
+    fig3 = go.Figure()
+
+    # Data points
+    fig3.add_trace(go.Scatter(
+        x=angle_dat["espejo"], y=angle_dat["angulo"],
+        mode='markers',
+        marker=dict(size=8, color=THEME['secondary'], opacity=0.7,
+                   line=dict(color=THEME['primary'], width=0.5)),
+        name='Data points'
+    ))
+
+    # Parabolic model
+
+    fig3.add_trace(go.Scatter(
+        x=x_lineal, y=model_ang(x_lineal, R_s*scale, gamma/scale),
+        mode='lines',
+        line=dict(width=2.5, color=THEME['dark_green'], dash='dashdot'),
+        name='Parabolic model'
+    ))
+
+    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig3, use_container_width=True)
+    st.write(mod_lineal.coeficiente/4)
+    st.write(mod_lineal2.coeficiente)
+    st.write(R_s*scale)
+
+
+    st.write("En conclusión las mediciones no son congruentes con lo prescrito por el modelo, además de no ser exactos con respecto a los parametros estimados por dicho modelo.")
+
+

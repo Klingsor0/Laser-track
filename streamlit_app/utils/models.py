@@ -1,4 +1,5 @@
 import numpy as np
+from math import sqrt
 class modelo_lineal:
     """
     clase para calculo de parametros de modelo lineal atraves de mínimos cuadrados
@@ -96,6 +97,15 @@ class modelo_lineal:
             self._se.append(sqrt((self.rss/(self.n - 1))* (1/ num)))
         return self._se
     
+    def predict(self, new_x:list[float]) -> list[float]:
+        """
+        Retorna la lista de valores estimados (predichos) para cada x.
+        """
+            
+        return [self.intercepcion  + self.coeficiente * xi for xi in new_x] 
+
+
+
     def resumen(self) -> None:
         """
         Impresión de resumen en tabla de los coeficientes y estadisticos
