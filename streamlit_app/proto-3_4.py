@@ -711,6 +711,8 @@ with tab2:
 with tab3:
     st.subheader("Draw Initial Curve Approximation")
 
+    st.image(st.session_state.filtered_image)
+
     if st.session_state.filtered_image is not None:
         img_edges = st.session_state.filtered_image.copy()[:,:,1]
         edge_image_pil = Image.fromarray(img_edges)
@@ -732,6 +734,7 @@ with tab3:
             display_toolbar=True,
             #key="snake_init_0",
         )
+
         if canvas_result.json_data is not None:
             pts =  canvas_to_pts(canvas_result, alpha)
             if pts is not None:
@@ -801,7 +804,7 @@ with tab3:
                     st.download_button(
                         "Download coordinates",
                         csv,
-                        "pruebas/curve_coordinates_2.csv",
+                        "../pruebas/curve_coordinates_2.csv",
                         "text/csv"
                     )
 
@@ -811,8 +814,8 @@ with tab3:
 with tab4:
     st.subheader("Curve analysis")
     
-    df = pd.read_csv('pruebas/curve_coordinates_2.csv')
-    st.write(scale)
+    df = pd.read_csv('../pruebas/curve_coordinates_2.csv')
+    #st.write(scale)
     # st.write(df)
     x = df['x']
     y = (max(df['y']) -  df['y'])
@@ -856,12 +859,12 @@ with tab4:
         radius_mask, R_s, model_branch
     )
     st.plotly_chart(fig, use_container_width=True)
-    st.write("escala adhoc", 11/R_s)
-    st.write("escala impuesta", scale)
-    st.write("gamma escalado adhoc", gamma*R_s/11)
-    st.write("gamma escalado impuesto", gamma/scale)
-    st.write("factor de perturbacion", 4*(gamma**2)*R_s**2 )
-    st.write("efecto de borde", -(0.5)*3.14*(4*(gamma**2)*R_s**8 )/ (85/scale)**6 )
+    #st.write("escala adhoc", 11/R_s)
+    #st.write("escala impuesta", scale)
+    #st.write("gamma escalado adhoc", gamma*R_s/11)
+    #st.write("gamma escalado impuesto", gamma/scale)
+    #st.write("factor de perturbacion", 4*(gamma**2)*R_s**2 )
+    #st.write("efecto de borde", -(0.5)*3.14*(4*(gamma**2)*R_s**8 )/ (85/scale)**6 )
 
     with st.sidebar:
         st.markdown("### 💾 Export")
