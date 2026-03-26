@@ -10,6 +10,7 @@ from . import tab2_preprocessing
 from . import tab3_edge_detection
 from . import tab4_analysis
 from . import tab5_validation
+from . import tab6_esp32_camera
 
 __all__ = [
     'tab1_setup',
@@ -17,4 +18,5 @@ __all__ = [
     'tab3_edge_detection',
     'tab4_analysis',
     'tab5_validation',
+    'tab6_esp32_camera',
 ]
