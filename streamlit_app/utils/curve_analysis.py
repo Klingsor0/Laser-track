@@ -87,7 +87,7 @@ def rss_model(function1, function2, mask, x, y):
     return list(set(residues1 + residues2))
 
 
-def min_rss(function1, function2, x, y, R_d, window, steps):
+def min_rss(function1, function2, x, y, R_d, window, steps, min_pt):
     """
     Find radius R that minimizes residual sum of squares
     
@@ -109,7 +109,6 @@ def min_rss(function1, function2, x, y, R_d, window, steps):
     """
     # TODO: Pass min_pt as parameter instead of using global
     # This is a code smell that should be fixed
-    global min_pt
     
     # Initialize with initial guess
     Rmin = R_d

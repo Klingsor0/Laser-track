@@ -106,10 +106,8 @@ def render():
             # Declare min_pt as global for min_rss function
             # TODO: Refactor to pass as parameter
             #global min_pt as global_min_pt
-            global global_min_pt
-            global_min_pt = min_pt
             
-            R_s = min_rss(mb_1, mb_2, x, y, R_d, 50.0, 200)
+            R_s = min_rss(mb_1, mb_2, x, y, R_d, 50.0, 200, min_pt)
         
         gamma = mod_parab._coeficientes[2]
         

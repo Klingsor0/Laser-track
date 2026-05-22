@@ -5,7 +5,9 @@ Handles app configuration, session state initialization, and tab rendering
 
 import streamlit as st
 from config.theme import apply_theme, THEME
-from tabs import tab1_setup, tab2_preprocessing, tab3_edge_detection, tab4_analysis, tab5_validation
+from tabs import (tab1_setup, tab2_preprocessing, tab3_edge_detection,
+                  tab4_analysis, tab5_validation, tab6_esp32_camera, 
+                  tab7_line_tracking, tab9_batch_acquisition, tab10_angle_analysis)
 
 # ============= PAGE CONFIGURATION =============
 st.set_page_config(
@@ -53,18 +55,49 @@ if 'energy_history' not in st.session_state:
 
 if 'filtered_image' not in st.session_state:
     st.session_state.filtered_image = None
+ 
+if 'esp32_connected' not in st.session_state:
+    st.session_state.esp32_connected = False
+ 
+if 'esp32_stream' not in st.session_state:
+    st.session_state.esp32_stream = None
+ 
+if 'esp32_captured_frame' not in st.session_state:
+    st.session_state.esp32_captured_frame = None
 
+if 'line_tracking_edges' not in st.session_state:
+    st.session_state.line_tracking_edges = None
+ 
+if 'detected_lines' not in st.session_state:
+    st.session_state.detected_lines = None
+ 
+if 'line_viz_image' not in st.session_state:
+    st.session_state.line_viz_image = None
+ 
+if 'line_tracking_snake' not in st.session_state:
+    st.session_state.line_tracking_snake = None
+ 
+if 'line_tracking_energy' not in st.session_state:
+    st.session_state.line_tracking_energy = None
+ 
+if 'line_tracking_initial' not in st.session_state:
+    st.session_state.line_tracking_initial = None
+ 
 
 # ============= MAIN TITLE =============
 st.title("🖼️ Image Processing Pipeline")
 
 # ============= TAB CREATION =============
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab9, tab10= st.tabs([
     "1️⃣ Setup",
     "2️⃣ Preprocessing",
     "3️⃣ Edge Detection",
     "4️⃣ Analysis",
-    "5️⃣ Validation"
+    "5️⃣ Validation",
+    "📹 ESP32 Camera",
+    "📏 Line Tracking",
+    "Batch Acquisition",
+    "Angle Analysis"
 ])
 
 # ============= RENDER TABS =============
@@ -85,3 +118,17 @@ with tab4:
 
 with tab5:
     tab5_validation.render()
+ 
+with tab6:
+    tab6_esp32_camera.render()
+
+with tab7:
+    tab7_line_tracking.render()
+ 
+with tab9:
+    tab9_batch_acquisition.render()
+
+with tab10:
+    tab10_angle_analysis.render()
+
+ 

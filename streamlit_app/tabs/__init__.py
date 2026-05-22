@@ -11,6 +11,7 @@ from . import tab3_edge_detection
 from . import tab4_analysis
 from . import tab5_validation
 from . import tab6_esp32_camera
+from . import tab7_line_tracking
 
 __all__ = [
     'tab1_setup',

@@ -52,6 +52,7 @@ def render():
         # Canvas scale factor
         alpha = 1/2
         
+        st.write(h2, w2)
         # Canvas for drawing initial curve
         canvas_result = st_canvas(
             fill_color="rgba(0, 255, 0, 0.3)",  # Green semi-transparent
@@ -59,11 +60,11 @@ def render():
             stroke_color="#00FF00",  # Green outline
             background_image=edge_image_pil,
             update_streamlit=True,
-            height=int(alpha * w2),
-            width=int(alpha * h2),
+            #height=int(alpha * w2),
+            #width=int(alpha * h2),
             drawing_mode="polygon",
             display_toolbar=True,
-            key="canvas_curve_init",
+            key="canvas_curve_init_2",
         )
         
         # ============= CURVE OPTIMIZATION =============
