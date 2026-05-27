@@ -3,12 +3,16 @@ Tab 4: Analysis - Curve Fitting and Model Comparison
 Performs spline fitting, finds critical points, and compares with theoretical models
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'shared_utils'))
+
 import streamlit as st
 import numpy as np
 import pandas as pd
 from scipy.interpolate import UnivariateSpline
 
-from utils.curve_analysis import (
+from curve_analysis import (
     quadratic_spline_roots,
     model_branch,
     rss_model,
@@ -16,9 +20,9 @@ from utils.curve_analysis import (
     fit_spline_and_derivatives,
     find_critical_points
 )
-from utils.plotting import create_curve_analysis_plot
-from utils.models import modelo_parabolico
-from utils.plots import plot_save_fig_profile_PR
+from plotting import create_curve_analysis_plot
+from models import modelo_parabolico
+from plots import plot_save_fig_profile_PR
 from config.theme import THEME
 
 

@@ -3,14 +3,18 @@ Tab 1: Setup - Upload, Calibration, and ROI Selection
 Handles initial image upload, spatial calibration, and region of interest selection
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'shared_utils'))
+
 import streamlit as st
 import numpy as np
 import cv2 as cv
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 
-from utils.image_processing import load_img, crop_img
-from utils.canvas_utils import canvas_to_pts
+from image_processing import load_img, crop_img
+from canvas_utils import canvas_to_pts
 from config.theme import THEME
 
 

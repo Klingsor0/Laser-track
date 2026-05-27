@@ -1,7 +1,3 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'shared_utils'))
-
 import streamlit as st
 import plotly.graph_objects as go
 # import importlib
@@ -13,10 +9,10 @@ import pandas as pd
 # import ast
 from matplotlib.colors import ListedColormap
 import matplotlib.pyplot as plt
-import snake1 as snk
-from plots import plot_save_fig_profile_PR
-from models import modelo_parabolico
-from models import modelo_lineal
+from utils import snake1 as snk
+from utils.plots import plot_save_fig_profile_PR
+from utils.models import modelo_parabolico
+from utils.models import modelo_lineal
 from scipy.interpolate import UnivariateSpline
 
 THEME = {
@@ -715,8 +711,6 @@ with tab2:
 with tab3:
     st.subheader("Draw Initial Curve Approximation")
 
-    st.image(st.session_state.filtered_image)
-
     if st.session_state.filtered_image is not None:
         img_edges = st.session_state.filtered_image.copy()[:,:,1]
         edge_image_pil = Image.fromarray(img_edges)
@@ -738,7 +732,6 @@ with tab3:
             display_toolbar=True,
             #key="snake_init_0",
         )
-
         if canvas_result.json_data is not None:
             pts =  canvas_to_pts(canvas_result, alpha)
             if pts is not None:
@@ -808,7 +801,7 @@ with tab3:
                     st.download_button(
                         "Download coordinates",
                         csv,
-                        "../pruebas/curve_coordinates_2.csv",
+                        "pruebas/curve_coordinates_2.csv",
                         "text/csv"
                     )
 
@@ -818,8 +811,8 @@ with tab3:
 with tab4:
     st.subheader("Curve analysis")
     
-    df = pd.read_csv('../pruebas/curve_coordinates_2.csv')
-    #st.write(scale)
+    df = pd.read_csv('pruebas/curve_coordinates_2.csv')
+    st.write(scale)
     # st.write(df)
     x = df['x']
     y = (max(df['y']) -  df['y'])
@@ -863,12 +856,12 @@ with tab4:
         radius_mask, R_s, model_branch
     )
     st.plotly_chart(fig, use_container_width=True)
-    #st.write("escala adhoc", 11/R_s)
-    #st.write("escala impuesta", scale)
-    #st.write("gamma escalado adhoc", gamma*R_s/11)
-    #st.write("gamma escalado impuesto", gamma/scale)
-    #st.write("factor de perturbacion", 4*(gamma**2)*R_s**2 )
-    #st.write("efecto de borde", -(0.5)*3.14*(4*(gamma**2)*R_s**8 )/ (85/scale)**6 )
+    st.write("escala adhoc", 11/R_s)
+    st.write("escala impuesta", scale)
+    st.write("gamma escalado adhoc", gamma*R_s/11)
+    st.write("gamma escalado impuesto", gamma/scale)
+    st.write("factor de perturbacion", 4*(gamma**2)*R_s**2 )
+    st.write("efecto de borde", -(0.5)*3.14*(4*(gamma**2)*R_s**8 )/ (85/scale)**6 )
 
     with st.sidebar:
         st.markdown("### 💾 Export")

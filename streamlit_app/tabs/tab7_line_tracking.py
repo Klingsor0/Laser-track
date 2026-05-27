@@ -4,6 +4,10 @@ Automatically detects straight lines using Hough Transform, then refines with sn
 Designed for tracking rotating lines with fixed pivot points (e.g., pendulums, pointers)
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'shared_utils'))
+
 import streamlit as st
 import cv2 as cv
 import numpy as np
@@ -11,8 +15,8 @@ import pandas as pd
 from PIL import Image
 import plotly.graph_objects as go
 
-from utils.image_processing import gaussian_blur
-from utils import snake1 as snk  # Your snake module
+from image_processing import gaussian_blur
+import snake1 as snk  # Your snake module
 from config.theme import THEME
 
 

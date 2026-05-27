@@ -4,13 +4,17 @@ Analyzes captured sessions with histograms, statistics, and comparisons
 Exports data for further analysis
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'shared_utils'))
+
 import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from utils.optical_experiment import ExperimentData
+from optical_experiment import ExperimentData
 from config.theme import THEME
 
 
@@ -416,7 +420,7 @@ def render():
             data = json.load(uploaded_json)
             
             # Reconstruct experiment
-            from utils.optical_experiment import CaptureSession
+            from optical_experiment import CaptureSession
             
             loaded_sessions = []
             for session_data in data['sessions']:

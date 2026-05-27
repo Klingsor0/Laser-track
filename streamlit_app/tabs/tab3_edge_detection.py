@@ -3,6 +3,10 @@ Tab 3: Edge Detection - Active Contour Curve Extraction
 Uses greedy energy minimization to extract curves from edge-detected images
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'shared_utils'))
+
 import streamlit as st
 import cv2 as cv
 import numpy as np
@@ -10,8 +14,8 @@ import pandas as pd
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
 
-from utils.canvas_utils import canvas_to_pts
-from utils import snake1 as snk  # Your snake module
+from canvas_utils import canvas_to_pts
+import snake1 as snk  # Your snake module
 from config.theme import THEME
 
 

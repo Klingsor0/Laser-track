@@ -3,12 +3,16 @@ Tab 2: Preprocessing - Image Filtering
 Applies various filters to prepare image for edge detection
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'shared_utils'))
+
 import streamlit as st
 import cv2 as cv
 import numpy as np
 from PIL import Image
 
-from utils.image_processing import gaussian_blur
+from image_processing import gaussian_blur
 from config.theme import THEME
 
 

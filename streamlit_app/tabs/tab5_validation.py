@@ -3,13 +3,17 @@ Tab 5: Validation - Model Validation with Experimental Data
 Compares theoretical predictions with experimental angle measurements
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'shared_utils'))
+
 import streamlit as st
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
-from utils.models import modelo_lineal
-from utils.plotting import create_angle_analysis_plot
+from models import modelo_lineal
+from plotting import create_angle_analysis_plot
 from config.theme import THEME
 
 

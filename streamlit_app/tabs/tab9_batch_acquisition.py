@@ -4,14 +4,18 @@ Captures N frames from ESP32 camera at a specific distance measurement
 Processes each frame to extract line angle automatically
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'shared_utils'))
+
 import streamlit as st
 import cv2 as cv
 import numpy as np
 import time
 from datetime import datetime
 
-from utils.optical_experiment import CaptureSession
-from utils.angle_extraction import extract_angle_from_frame
+from optical_experiment import CaptureSession
+from angle_extraction import extract_angle_from_frame
 from config.theme import THEME
 
 
