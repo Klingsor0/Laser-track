@@ -11,6 +11,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 import numpy as np
 import cv2 as cv
 
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QSplitter,
     QVBoxLayout, QHBoxLayout, QGroupBox,
@@ -22,11 +24,15 @@ from PyQt6.QtCore import Qt, pyqtSlot
 from PyQt6.QtGui import QFont, QColor
 
 from gui.camera_widget import CameraWidget
+from gui.config_panel import ConfigPanel
 from backend.acquisition_controller import (
     AcquisitionController, AcquisitionConfig,
     AcquisitionThread, FrameResult,
 )
+from backend.camera_config import CameraConfig
 from optical_experiment import CaptureSession
+
+_DEFAULT_CFG_PATH = Path.home() / '.laser_track_camera.json'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -333,6 +339,7 @@ class MainWindow(QMainWindow):
         self.resize(1100, 680)
         self._build_ui()
         self._apply_style()
+        self._load_saved_config()
 
     def _build_ui(self):
         central = QWidget()
@@ -342,12 +349,33 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # Left: camera widget
+        # ── Left pane: camera + collapsible config panel ───────────────
+        left_pane = QWidget()
+        left_layout = QVBoxLayout(left_pane)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+
         self._camera = CameraWidget()
         self._camera.setMinimumWidth(400)
-        splitter.addWidget(self._camera)
+        left_layout.addWidget(self._camera, stretch=1)
 
-        # Right: acquisition panel
+        self._btn_settings = QPushButton("⚙  Camera Settings  ▼")
+        self._btn_settings.setCheckable(True)
+        self._btn_settings.setChecked(False)
+        self._btn_settings.toggled.connect(self._on_settings_toggled)
+        left_layout.addWidget(self._btn_settings)
+
+        self._config_panel = ConfigPanel()
+        self._config_panel.setVisible(False)
+        left_layout.addWidget(self._config_panel)
+
+        # Wire config panel ↔ camera widget
+        self._config_panel.config_changed.connect(self._camera.set_config)
+        self._camera._preview.roi_drawn.connect(self._config_panel.set_roi)
+
+        splitter.addWidget(left_pane)
+
+        # ── Right pane: acquisition panel ─────────────────────────────
         self._acq = AcquisitionPanel()
         self._acq.setMinimumWidth(340)
         self._acq.attach_camera(self._camera)
@@ -356,6 +384,21 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         root.addWidget(splitter)
+
+    @pyqtSlot(bool)
+    def _on_settings_toggled(self, checked: bool):
+        self._config_panel.setVisible(checked)
+        self._camera.set_editing_mode(checked)
+        arrow = "▲" if checked else "▼"
+        self._btn_settings.setText(f"⚙  Camera Settings  {arrow}")
+
+    def _load_saved_config(self):
+        if _DEFAULT_CFG_PATH.exists():
+            try:
+                cfg = CameraConfig.load(_DEFAULT_CFG_PATH)
+                self._config_panel.set_config(cfg)
+            except Exception:
+                pass
 
     def _apply_style(self):
         self.setStyleSheet("""

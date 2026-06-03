@@ -2,10 +2,13 @@
 Camera Widget — PyQt6 live preview.
 
 Wraps CameraManager in a QThread and provides:
-  - Live preview (QLabel, 30 fps target)
+  - Live preview (PreviewLabel, supports ROI drawing via mouse)
   - Connect / Disconnect controls (USB or ESP32-CAM)
   - frame_ready  signal → Workflow B (acquisition loop consumes every frame)
   - frame_captured signal → Workflow A (single-frame profile analysis)
+
+The camera preprocessing pipeline (rotation, ROI, blur, contrast/brightness)
+is applied to every frame via CameraConfig.  set_config() updates it live.
 """
 
 import sys
@@ -20,10 +23,203 @@ from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QLineEdit, QSpinBox, QComboBox, QGroupBox, QSizePolicy,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QPoint
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 
 from backend.camera_manager import CameraManager, CameraError, SourceType
+from backend.camera_config import CameraConfig, apply_preview_pipeline, apply_acquisition_pipeline
+
+
+# ---------------------------------------------------------------------------
+# Preview label — supports ROI rectangle drawing via mouse drag
+# ---------------------------------------------------------------------------
+
+class PreviewLabel(QLabel):
+    """
+    QLabel subclass that lets the user draw a ROI rectangle by click-dragging.
+
+    Signals
+    -------
+    roi_drawn(x, y, w, h)
+        Emitted when the user finishes drawing a rectangle (mouse release).
+        Coordinates are in the original frame's pixel space.
+    """
+
+    roi_drawn = pyqtSignal(int, int, int, int)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._drawing         = False
+        self._drawing_enabled = False          # only True while config panel is open
+        self._drag_start: QPoint | None = None
+        self._drag_end:   QPoint | None = None
+
+        # Set by _update_preview() after every rendered frame
+        self._scale    = 1.0
+        self._offset_x = 0
+        self._offset_y = 0
+        self._frame_w  = 1
+        self._frame_h  = 1
+
+        # Current ROI in frame coords (for persistent overlay after drawing)
+        self._roi: tuple | None = None
+
+        # Rotation axis guideline (visible only in editing mode)
+        self._axis_visible = False
+        self._axis_x       = 0.5   # fraction of frame width
+        self._axis_y       = 0.5   # fraction of frame height
+        self._axis_angle   = 0.0   # degrees
+
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.setMouseTracking(True)
+
+    # ── Frame info ─────────────────────────────────────────────────────
+
+    def update_frame_info(self, scale: float, offset_x: int, offset_y: int,
+                          frame_w: int, frame_h: int) -> None:
+        self._scale    = scale
+        self._offset_x = offset_x
+        self._offset_y = offset_y
+        self._frame_w  = frame_w
+        self._frame_h  = frame_h
+
+    def set_roi_overlay(self, roi: tuple | None) -> None:
+        self._roi = roi
+        self.update()
+
+    def set_axis(self, x_frac: float, y_frac: float, angle_deg: float) -> None:
+        self._axis_x     = x_frac
+        self._axis_y     = y_frac
+        self._axis_angle = angle_deg
+        self.update()
+
+    def set_axis_visible(self, visible: bool) -> None:
+        self._axis_visible = visible
+        self.update()
+
+    def set_drawing_enabled(self, enabled: bool) -> None:
+        self._drawing_enabled = enabled
+        self.setCursor(
+            Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
+        )
+        if not enabled:
+            self._drawing    = False
+            self._drag_start = None
+            self._drag_end   = None
+            self.update()
+
+    # ── Coordinate conversion ──────────────────────────────────────────
+
+    def _to_frame(self, px: int, py: int) -> tuple[int, int]:
+        if self._scale <= 0:
+            return (0, 0)
+        fx = int((px - self._offset_x) / self._scale)
+        fy = int((py - self._offset_y) / self._scale)
+        return (
+            max(0, min(self._frame_w - 1, fx)),
+            max(0, min(self._frame_h - 1, fy)),
+        )
+
+    def _to_preview(self, fx: int, fy: int) -> tuple[int, int]:
+        return (
+            int(fx * self._scale + self._offset_x),
+            int(fy * self._scale + self._offset_y),
+        )
+
+    # ── Mouse events ───────────────────────────────────────────────────
+
+    def mousePressEvent(self, event):
+        if not self._drawing_enabled:
+            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drawing    = True
+            self._drag_start = event.position().toPoint()
+            self._drag_end   = self._drag_start
+
+    def mouseMoveEvent(self, event):
+        if self._drawing:
+            self._drag_end = event.position().toPoint()
+            self.update()
+
+    def mouseReleaseEvent(self, event):
+        if not self._drawing_enabled:
+            return
+        if event.button() != Qt.MouseButton.LeftButton or not self._drawing:
+            return
+        self._drawing  = False
+        self._drag_end = event.position().toPoint()
+
+        x1, y1 = self._to_frame(self._drag_start.x(), self._drag_start.y())
+        x2, y2 = self._to_frame(self._drag_end.x(),   self._drag_end.y())
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+        w, h = x2 - x1, y2 - y1
+
+        self._drag_start = None
+        self._drag_end   = None
+
+        if w > 4 and h > 4:
+            self._roi = (x1, y1, w, h)
+            self.roi_drawn.emit(x1, y1, w, h)
+        self.update()
+
+    # ── Paint overlay ──────────────────────────────────────────────────
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+
+        has_drag = self._drawing and self._drag_start and self._drag_end
+        has_roi  = self._roi is not None
+        has_axis = self._axis_visible
+
+        if not (has_drag or has_roi or has_axis):
+            return
+
+        painter = QPainter(self)
+
+        # Axis guideline (drawn first so ROI rectangle is on top)
+        if has_axis:
+            self._draw_axis_line(painter)
+
+        # ROI rectangle
+        if has_drag:
+            pen = QPen(QColor("#6EBA31"), 2, Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            x = min(self._drag_start.x(), self._drag_end.x())
+            y = min(self._drag_start.y(), self._drag_end.y())
+            w = abs(self._drag_end.x() - self._drag_start.x())
+            h = abs(self._drag_end.y() - self._drag_start.y())
+            painter.drawRect(x, y, w, h)
+        elif has_roi:
+            rx, ry, rw, rh = self._roi
+            px, py = self._to_preview(rx, ry)
+            pw = int(rw * self._scale)
+            ph = int(rh * self._scale)
+            pen = QPen(QColor("#6EBA31"), 2, Qt.PenStyle.SolidLine)
+            painter.setPen(pen)
+            painter.drawRect(px, py, pw, ph)
+
+        painter.end()
+
+    def _draw_axis_line(self, painter: QPainter) -> None:
+        # Convert pivot (absolute frame pixels) to preview (label) coordinates
+        px = int(self._axis_x * self._scale + self._offset_x)
+        py = int(self._axis_y * self._scale + self._offset_y)
+
+        # Vertical extent spans the full displayed frame area
+        top_y = int(self._offset_y)
+        bot_y = int(self._offset_y + self._frame_h * self._scale)
+
+        # Vertical guideline
+        painter.setPen(QPen(QColor("#FFB800"), 2, Qt.PenStyle.SolidLine))
+        painter.drawLine(px, top_y, px, bot_y)
+
+        # Pivot marker — filled circle at (axis_x, axis_y)
+        painter.setPen(QPen(QColor("#FFB800"), 8,
+                            Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+        painter.drawPoint(px, py)
 
 
 # ---------------------------------------------------------------------------
@@ -127,6 +323,8 @@ class CameraWidget(QWidget):
         self._thread: CaptureThread | None = None
         self._last_frame: np.ndarray | None = None
         self._connected: bool = False
+        self._config: CameraConfig = CameraConfig()
+        self._editing: bool = False    # True while config panel is open
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -137,8 +335,8 @@ class CameraWidget(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
 
-        # --- Preview label ---
-        self._preview = QLabel("No signal")
+        # --- Preview label (supports ROI drawing) ---
+        self._preview = PreviewLabel("No signal")
         self._preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview.setMinimumSize(320, 240)
         self._preview.setSizePolicy(
@@ -255,19 +453,26 @@ class CameraWidget(QWidget):
         self._set_connected_state(False, "")
 
     def _on_capture(self):
-        """Grab the last frame and emit it as RGB for Workflow A."""
+        """Grab the last frame, apply full pipeline, emit as RGB for Workflow A."""
         if self._last_frame is not None:
-            rgb = cv.cvtColor(self._last_frame, cv.COLOR_BGR2RGB)
+            processed = apply_acquisition_pipeline(self._last_frame, self._config)
+            rgb = cv.cvtColor(processed, cv.COLOR_BGR2RGB)
             self.frame_captured.emit(rgb)
 
     def _on_frame(self, bgr: np.ndarray):
         self._last_frame = bgr
 
-        # Forward to Workflow B acquisition controller
-        self.frame_ready.emit(bgr)
+        # Acquisition signal always gets the fully processed frame
+        processed = apply_acquisition_pipeline(bgr, self._config)
+        self.frame_ready.emit(processed)
 
-        # Update preview (scale down if needed)
-        self._update_preview(bgr)
+        if self._editing:
+            # While config panel is open: show full frame + ROI overlay for editing
+            self._update_preview(apply_preview_pipeline(bgr, self._config),
+                                 show_roi_overlay=True)
+        else:
+            # Normal operation: preview mirrors exactly what the algorithm receives
+            self._update_preview(processed, show_roi_overlay=False)
 
     def _on_error(self, msg: str):
         self._status.setText(f"Error: {msg}")
@@ -281,21 +486,43 @@ class CameraWidget(QWidget):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _update_preview(self, bgr: np.ndarray):
+    def _update_preview(self, bgr: np.ndarray, show_roi_overlay: bool = False):
         rgb = cv.cvtColor(bgr, cv.COLOR_BGR2RGB)
-        h, w = rgb.shape[:2]
+        frame_h, frame_w = rgb.shape[:2]
 
-        # Scale to fit preview label without distortion
-        scale = min(self.MAX_PREVIEW_W / w, self.MAX_PREVIEW_H / h, 1.0)
+        scale = min(self.MAX_PREVIEW_W / frame_w, self.MAX_PREVIEW_H / frame_h, 1.0)
+        disp_w = int(frame_w * scale)
+        disp_h = int(frame_h * scale)
         if scale < 1.0:
-            new_w, new_h = int(w * scale), int(h * scale)
-            rgb = cv.resize(rgb, (new_w, new_h), interpolation=cv.INTER_AREA)
-            h, w = new_h, new_w
+            rgb = cv.resize(rgb, (disp_w, disp_h), interpolation=cv.INTER_AREA)
 
-        qimg = QImage(
-            rgb.data, w, h, w * 3, QImage.Format.Format_RGB888
-        )
+        qimg = QImage(rgb.data, disp_w, disp_h, disp_w * 3, QImage.Format.Format_RGB888)
         self._preview.setPixmap(QPixmap.fromImage(qimg))
+
+        offset_x = max(0, (self._preview.width()  - disp_w) // 2)
+        offset_y = max(0, (self._preview.height() - disp_h) // 2)
+        self._preview.update_frame_info(scale, offset_x, offset_y, frame_w, frame_h)
+        self._preview.set_roi_overlay(self._config.roi if show_roi_overlay else None)
+        if show_roi_overlay:
+            self._preview.set_axis(
+                self._config.axis_x, self._config.axis_y, self._config.rotation
+            )
+
+    @pyqtSlot(object)
+    def set_config(self, config: CameraConfig) -> None:
+        """Apply a new CameraConfig; takes effect on the next incoming frame."""
+        self._config = config
+
+    def set_editing_mode(self, editing: bool) -> None:
+        """
+        Switch preview between editing mode (full frame + ROI overlay + axis line) and
+        normal mode (cropped frame — identical to what the algorithm receives).
+        """
+        self._editing = editing
+        self._preview.set_drawing_enabled(editing)
+        self._preview.set_axis_visible(editing)
+        if not editing:
+            self._preview.set_roi_overlay(None)
 
     @property
     def is_connected(self) -> bool:
@@ -319,6 +546,7 @@ class CameraWidget(QWidget):
             self._status.setStyleSheet("color: #cc4444;")
             self._preview.setText("No signal")
             self._preview.setPixmap(QPixmap())
+            self._preview.set_roi_overlay(None)
             self.disconnected.emit()
 
     def _stop_thread(self):
