@@ -27,10 +27,10 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QSplitter, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QPushButton, QDialogButtonBox,
-    QSizePolicy, QFrame, QShortcut,
+    QSizePolicy, QFrame,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage, QPixmap, QColor, QPalette, QFont, QKeySequence
+from PyQt6.QtGui import QImage, QPixmap, QColor, QPalette, QFont, QKeySequence, QShortcut
 
 from optical_experiment import CaptureSession
 
