@@ -70,6 +70,10 @@ class PreviewLabel(QLabel):
         self._axis_y       = 0.5   # fraction of frame height
         self._axis_angle   = 0.0   # degrees
 
+        # Polygon drawing mode — used by CurveExtractionDialog
+        self._poly_mode = False
+        self._poly_pts: list[tuple[int, int]] = []  # frame-space vertices
+
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.setMouseTracking(True)
 
@@ -129,6 +133,13 @@ class PreviewLabel(QLabel):
     # ── Mouse events ───────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
+        if self._poly_mode:
+            if event.button() == Qt.MouseButton.LeftButton:
+                p = event.position().toPoint()
+                fx, fy = self._to_frame(p.x(), p.y())
+                self._poly_pts.append((fx, fy))
+                self.update()
+            return
         if not self._drawing_enabled:
             return
         if event.button() == Qt.MouseButton.LeftButton:
@@ -165,6 +176,26 @@ class PreviewLabel(QLabel):
             self.roi_drawn.emit(x1, y1, w, h)
         self.update()
 
+    # ── Polygon mode ───────────────────────────────────────────────────
+
+    def enable_polygon_mode(self) -> None:
+        self._poly_mode = True
+        self._poly_pts.clear()
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def disable_polygon_mode(self) -> None:
+        self._poly_mode = False
+        self._poly_pts.clear()
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def get_polygon_pts(self) -> list[tuple[int, int]]:
+        return list(self._poly_pts)
+
+    def clear_polygon_pts(self) -> None:
+        self._poly_pts.clear()
+        self.update()
+
     # ── Paint overlay ──────────────────────────────────────────────────
 
     def paintEvent(self, event):
@@ -173,8 +204,9 @@ class PreviewLabel(QLabel):
         has_drag = self._drawing and self._drag_start and self._drag_end
         has_roi  = self._roi is not None
         has_axis = self._axis_visible
+        has_poly = self._poly_mode and len(self._poly_pts) > 0
 
-        if not (has_drag or has_roi or has_axis):
+        if not (has_drag or has_roi or has_axis or has_poly):
             return
 
         painter = QPainter(self)
@@ -200,6 +232,18 @@ class PreviewLabel(QLabel):
             pen = QPen(QColor("#6EBA31"), 2, Qt.PenStyle.SolidLine)
             painter.setPen(pen)
             painter.drawRect(px, py, pw, ph)
+
+        # Polygon vertices and edges
+        if has_poly:
+            pen = QPen(QColor("#00D4FF"), 2, Qt.PenStyle.SolidLine)
+            painter.setPen(pen)
+            preview_pts = [self._to_preview(fx, fy) for fx, fy in self._poly_pts]
+            for i in range(len(preview_pts) - 1):
+                x1, y1 = preview_pts[i]
+                x2, y2 = preview_pts[i + 1]
+                painter.drawLine(x1, y1, x2, y2)
+            for px, py in preview_pts:
+                painter.drawEllipse(px - 3, py - 3, 6, 6)
 
         painter.end()
 
@@ -536,6 +580,10 @@ class CameraWidget(QWidget):
     def unfreeze_preview(self) -> None:
         """Resume the live camera stream in the preview."""
         self._preview_frozen = False
+
+    def get_last_frame(self) -> np.ndarray | None:
+        """Return the most recent raw BGR frame, or None if no frame received yet."""
+        return self._last_frame
 
     @property
     def is_connected(self) -> bool:

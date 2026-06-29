@@ -30,6 +30,7 @@ from PyQt6.QtGui import QFont, QColor
 
 from gui.camera_widget import CameraWidget
 from gui.config_panel import ConfigPanel
+from gui.curve_extraction_dialog import CurveExtractionDialog
 from backend.acquisition_controller import (
     AcquisitionController, AcquisitionConfig,
     AcquisitionThread, FrameResult,
@@ -439,6 +440,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Laser Track — Prototype")
         self.resize(1100, 680)
+        self._reference_curve: np.ndarray | None = None
         self._build_ui()
         self._apply_style()
         self._load_saved_config()
@@ -477,15 +479,45 @@ class MainWindow(QMainWindow):
 
         splitter.addWidget(left_pane)
 
-        # ── Right pane: acquisition panel ─────────────────────────────
+        # ── Right pane: reference bar + acquisition panel ─────────────
+        right_pane = QWidget()
+        right_lay = QVBoxLayout(right_pane)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(0)
+
+        ref_bar = QWidget()
+        ref_bar_lay = QHBoxLayout(ref_bar)
+        ref_bar_lay.setContentsMargins(8, 4, 8, 4)
+        self._btn_ref = QPushButton("Reference Geometry (Cam 2)…")
+        self._btn_ref.clicked.connect(self._on_open_reference_dialog)
+        ref_bar_lay.addWidget(self._btn_ref)
+        self._lbl_ref_status = QLabel("No reference")
+        self._lbl_ref_status.setStyleSheet("color: #556655; font-size: 10px;")
+        ref_bar_lay.addWidget(self._lbl_ref_status)
+        ref_bar_lay.addStretch()
+        right_lay.addWidget(ref_bar)
+
         self._acq = AcquisitionPanel()
         self._acq.setMinimumWidth(340)
         self._acq.attach_camera(self._camera)
-        splitter.addWidget(self._acq)
+        right_lay.addWidget(self._acq, stretch=1)
+
+        splitter.addWidget(right_pane)
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         root.addWidget(splitter)
+
+    @pyqtSlot()
+    def _on_open_reference_dialog(self):
+        dlg = CurveExtractionDialog(
+            last_curve=self._reference_curve, parent=self
+        )
+        if dlg.exec() and dlg.result is not None:
+            self._reference_curve = dlg.result.mean_curve
+            n = len(self._reference_curve)
+            self._lbl_ref_status.setText(f"Reference: {n} pts ✓")
+            self._lbl_ref_status.setStyleSheet("color: #6EBA31; font-size: 10px;")
 
     @pyqtSlot(bool)
     def _on_settings_toggled(self, checked: bool):
