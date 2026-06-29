@@ -13,6 +13,11 @@ import cv2 as cv
 
 from pathlib import Path
 
+import matplotlib
+matplotlib.use('QtAgg')
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+from matplotlib.figure import Figure
+
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QSplitter,
     QVBoxLayout, QHBoxLayout, QGroupBox,
@@ -36,6 +41,60 @@ _DEFAULT_CFG_PATH = Path.home() / '.laser_track_camera.json'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Angle histogram widget
+# ──────────────────────────────────────────────────────────────────────────────
+
+class AngleHistogram(QWidget):
+    """Compact matplotlib histogram embedded in a QWidget."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        fig = Figure(figsize=(3, 1.8), dpi=80, facecolor='#0d1117')
+        fig.subplots_adjust(left=0.14, right=0.97, top=0.82, bottom=0.24)
+        self._canvas = FigureCanvasQTAgg(fig)
+        self._ax = fig.add_subplot(111)
+        self._ax.set_facecolor('#0d1117')
+        self._style_ax()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._canvas)
+
+    def _style_ax(self):
+        ax = self._ax
+        ax.tick_params(colors='#c4e49a', labelsize=6)
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#447130')
+        ax.set_xlabel('Angle (°)', color='#c4e49a', fontsize=7)
+        ax.set_ylabel('Count',     color='#c4e49a', fontsize=7)
+
+    def plot(self, angles: list, title: str = '') -> None:
+        ax = self._ax
+        ax.clear()
+        ax.set_facecolor('#0d1117')
+        self._style_ax()
+        if len(angles) < 2:
+            ax.set_title(title or 'Waiting for data…', color='#888', fontsize=7)
+            self._canvas.draw()
+            return
+        arr = np.array(angles)
+        n_bins = min(max(int(np.sqrt(len(arr))), 5), 30)
+        ax.hist(arr, bins=n_bins, color='#447130', edgecolor='#6EBA31', linewidth=0.5)
+        mean = np.mean(arr)
+        ax.axvline(mean, color='#FFB800', linewidth=1.5, linestyle='--',
+                   label=f'μ = {mean:.2f}°')
+        ax.set_title(title, color='#c4e49a', fontsize=7)
+        ax.legend(fontsize=6, facecolor='#0d1117', edgecolor='#447130',
+                  labelcolor='#FFB800', loc='upper right')
+        self._canvas.draw()
+
+    def clear(self) -> None:
+        self._ax.clear()
+        self._ax.set_facecolor('#0d1117')
+        self._style_ax()
+        self._canvas.draw()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Acquisition panel (right side)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -50,6 +109,7 @@ class AcquisitionPanel(QWidget):
         self._thread: AcquisitionThread | None = None
         self._camera_widget: CameraWidget | None = None
         self._sessions: list[CaptureSession] = []
+        self._current_angles: list[float] = []
         self._build_ui()
 
     def attach_camera(self, camera_widget: CameraWidget) -> None:
@@ -154,6 +214,10 @@ class AcquisitionPanel(QWidget):
         self._lbl_status.setStyleSheet("color: #aaa; font-size: 11px;")
         live_lay.addWidget(self._lbl_status)
 
+        self._histogram = AngleHistogram()
+        self._histogram.setMinimumHeight(144)
+        live_lay.addWidget(self._histogram)
+
         root.addWidget(live_grp)
 
         # ── Captured frame notice (Workflow A) ────────────────────────────────
@@ -179,6 +243,7 @@ class AcquisitionPanel(QWidget):
         self._table.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
         )
+        self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
         sess_lay.addWidget(self._table)
 
         clear_btn = QPushButton("Clear all sessions")
@@ -217,6 +282,10 @@ class AcquisitionPanel(QWidget):
         self._thread.error.connect(self._on_acq_error)
         self._thread.finished.connect(self._on_thread_finished)
 
+        self._current_angles = []
+        self._histogram.clear()
+        self._table.clearSelection()
+
         self._progress.setMaximum(config.num_frames)
         self._progress.setValue(0)
         self._progress.setFormat(f"%v / {config.num_frames} frames")
@@ -247,6 +316,23 @@ class AcquisitionPanel(QWidget):
         cur, total = result.frame_index + 1, self._progress.maximum()
         self._progress.setValue(cur)
         self._lbl_status.setText(f"Frame {cur}/{total}")
+
+        self._current_angles.append(result.angle_deg)
+        self._histogram.plot(self._current_angles,
+                             title=f"Live — {len(self._current_angles)}/{total} frames")
+
+        # Show acquired frame with fitted line overlaid
+        if self._camera_widget is not None:
+            roi_rgb = result.diagnostics.get('roi_image')
+            snake   = result.diagnostics.get('snake_optimized')
+            if roi_rgb is not None and snake is not None and len(snake) >= 2:
+                annotated = roi_rgb.copy()
+                x0, y0 = int(snake[0, 0]),  int(snake[0, 1])
+                x1, y1 = int(snake[-1, 0]), int(snake[-1, 1])
+                cv.line(annotated, (x0, y0), (x1, y1), (255, 64, 64), 2)
+                self._camera_widget.freeze_preview(
+                    cv.cvtColor(annotated, cv.COLOR_RGB2BGR)
+                )
 
     @pyqtSlot(object)
     def _on_session_complete(self, session: CaptureSession):
@@ -285,6 +371,20 @@ class AcquisitionPanel(QWidget):
     def _on_clear_sessions(self):
         self._sessions.clear()
         self._table.setRowCount(0)
+        self._histogram.clear()
+
+    @pyqtSlot()
+    def _on_table_selection_changed(self):
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if row < len(self._sessions):
+            s = self._sessions[row]
+            self._histogram.plot(
+                s.angles,
+                title=f"Session {s.session_id} — {s.num_frames} frames @ {s.distance} {s.unit}"
+            )
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -325,6 +425,8 @@ class AcquisitionPanel(QWidget):
             except RuntimeError:
                 pass
             self._thread = None
+        if self._camera_widget is not None:
+            self._camera_widget.unfreeze_preview()
 
 
 # ──────────────────────────────────────────────────────────────────────────────

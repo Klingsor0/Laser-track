@@ -325,6 +325,7 @@ class CameraWidget(QWidget):
         self._connected: bool = False
         self._config: CameraConfig = CameraConfig()
         self._editing: bool = False    # True while config panel is open
+        self._preview_frozen: bool = False  # True during acquisition: shows annotated frame
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -466,6 +467,9 @@ class CameraWidget(QWidget):
         processed = apply_acquisition_pipeline(bgr, self._config)
         self.frame_ready.emit(processed)
 
+        if self._preview_frozen:
+            return  # preview is showing the last annotated acquired frame
+
         if self._editing:
             # While config panel is open: show full frame + ROI overlay for editing
             self._update_preview(apply_preview_pipeline(bgr, self._config),
@@ -523,6 +527,15 @@ class CameraWidget(QWidget):
         self._preview.set_axis_visible(editing)
         if not editing:
             self._preview.set_roi_overlay(None)
+
+    def freeze_preview(self, bgr: np.ndarray) -> None:
+        """Show a static annotated frame instead of the live stream."""
+        self._preview_frozen = True
+        self._update_preview(bgr, show_roi_overlay=False)
+
+    def unfreeze_preview(self) -> None:
+        """Resume the live camera stream in the preview."""
+        self._preview_frozen = False
 
     @property
     def is_connected(self) -> bool:
