@@ -31,6 +31,7 @@ from PyQt6.QtGui import QFont, QColor
 from gui.camera_widget import CameraWidget
 from gui.config_panel import ConfigPanel
 from gui.curve_extraction_dialog import CurveExtractionDialog
+from gui.frame_review_dialog import FrameReviewDialog
 from backend.acquisition_controller import (
     AcquisitionController, AcquisitionConfig,
     AcquisitionThread, FrameResult,
@@ -247,9 +248,16 @@ class AcquisitionPanel(QWidget):
         self._table.itemSelectionChanged.connect(self._on_table_selection_changed)
         sess_lay.addWidget(self._table)
 
+        btn_row_sess = QHBoxLayout()
+        self._btn_review = QPushButton("Review frames…")
+        self._btn_review.setEnabled(False)
+        self._btn_review.clicked.connect(self._on_review_session)
+        btn_row_sess.addWidget(self._btn_review)
+
         clear_btn = QPushButton("Clear all sessions")
         clear_btn.clicked.connect(self._on_clear_sessions)
-        sess_lay.addWidget(clear_btn)
+        btn_row_sess.addWidget(clear_btn)
+        sess_lay.addLayout(btn_row_sess)
 
         root.addWidget(sess_grp)
         root.addStretch()
@@ -378,14 +386,42 @@ class AcquisitionPanel(QWidget):
     def _on_table_selection_changed(self):
         rows = self._table.selectionModel().selectedRows()
         if not rows:
+            self._btn_review.setEnabled(False)
             return
         row = rows[0].row()
+        self._btn_review.setEnabled(row < len(self._sessions))
         if row < len(self._sessions):
             s = self._sessions[row]
             self._histogram.plot(
                 s.angles,
                 title=f"Session {s.session_id} — {s.num_frames} frames @ {s.distance} {s.unit}"
             )
+
+    @pyqtSlot()
+    def _on_review_session(self):
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if row >= len(self._sessions):
+            return
+        session = self._sessions[row]
+        if not session.frames:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.information(
+                self, "No frames",
+                "This session has no stored frame data to review."
+            )
+            return
+        dlg = FrameReviewDialog(session, parent=self)
+        dlg.exec()
+        # Refresh table row stats in case rejections changed the filtered mean/std
+        stats = session.get_filtered_statistics() or session.get_statistics()
+        if stats:
+            green = QColor("#6EBA31")
+            self._table.item(row, 3).setText(f"{stats['mean']:.3f}")
+            self._table.item(row, 3).setForeground(green)
+            self._table.item(row, 4).setText(f"{stats['std']:.3f}")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

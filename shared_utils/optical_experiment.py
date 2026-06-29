@@ -32,31 +32,32 @@ class CaptureSession:
         # Data storage
         self.frames = []           # List of numpy arrays (images)
         self.angles = []           # List of extracted angles (degrees)
-        self.snake_results = []    # List of optimized snake coordinates (optional)
-        
+        self.snake_results = []    # List of optimized snake coordinates (None if extraction failed)
+        self.rejected = []         # List of bool — True = manually rejected by reviewer
+
         # Metadata
         self.timestamp = datetime.now()
         self.session_id = str(uuid.uuid4())[:8]  # Short unique ID
         self.num_frames = 0
-        
+
         # Processing parameters (stored for reproducibility)
         self.roi_params = None
         self.snake_params = None
         self.extraction_params = None
-    
+
     def add_frame(self, frame, angle, snake_points=None):
         """
-        Add a processed frame to the session
-        
+        Add a processed frame to the session.
+
         Args:
             frame: Captured image (numpy array)
             angle: Extracted angle in degrees
-            snake_points: Optimized snake coordinates (optional)
+            snake_points: Optimized snake coordinates, or None if extraction failed
         """
         self.frames.append(frame)
         self.angles.append(angle)
-        if snake_points is not None:
-            self.snake_results.append(snake_points)
+        self.snake_results.append(snake_points)   # always parallel with frames/angles
+        self.rejected.append(False)
         self.num_frames += 1
     
     def get_statistics(self):
@@ -90,6 +91,29 @@ class CaptureSession:
             'n_frames': n
         }
     
+    def get_accepted_angles(self):
+        """Return angles for non-rejected frames only."""
+        return [a for a, r in zip(self.angles, self.rejected) if not r]
+
+    def get_filtered_statistics(self):
+        """Like get_statistics() but computed only over accepted (non-rejected) frames."""
+        accepted = self.get_accepted_angles()
+        n = len(accepted)
+        if n == 0:
+            return None
+        arr = np.array(accepted)
+        mean = np.mean(arr)
+        std  = np.std(arr, ddof=1) if n > 1 else 0.0
+        sem  = std / np.sqrt(n) if n > 1 else 0.0
+        ci   = 1.96 * sem
+        return {
+            'mean': mean, 'std': std, 'sem': sem,
+            'ci_95_lower': mean - ci, 'ci_95_upper': mean + ci,
+            'min': np.min(arr), 'max': np.max(arr),
+            'median': np.median(arr),
+            'n_frames': n, 'n_rejected': self.num_frames - n,
+        }
+
     def get_angle_array(self):
         """Return angles as numpy array for easy manipulation"""
         return np.array(self.angles)
