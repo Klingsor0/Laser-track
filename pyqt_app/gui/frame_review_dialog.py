@@ -27,10 +27,10 @@ from PyQt6.QtWidgets import (
     QDialog, QWidget, QSplitter, QScrollArea,
     QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QPushButton, QDialogButtonBox,
-    QSizePolicy, QFrame,
+    QSizePolicy, QFrame, QShortcut,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QImage, QPixmap, QColor, QPalette, QFont
+from PyQt6.QtGui import QImage, QPixmap, QColor, QPalette, QFont, QKeySequence
 
 from optical_experiment import CaptureSession
 
@@ -241,6 +241,10 @@ class FrameReviewDialog(QDialog):
         self._btn_next.setFixedWidth(80)
         self._btn_next.clicked.connect(self._on_next)
         nav_row.addWidget(self._btn_next)
+
+        key_hint = QLabel("  h / l — navigate   r — reject")
+        key_hint.setStyleSheet("color: #556655; font-size: 10px;")
+        nav_row.addWidget(key_hint)
         nav_row.addStretch()
         detail_lay.addLayout(nav_row)
 
@@ -266,6 +270,11 @@ class FrameReviewDialog(QDialog):
         btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         btn_box.rejected.connect(self.accept)
         root.addWidget(btn_box)
+
+        # ── Keyboard shortcuts (window-level, bypass child focus) ─────
+        QShortcut(QKeySequence("h"), self, activated=self._on_prev)
+        QShortcut(QKeySequence("l"), self, activated=self._on_next)
+        QShortcut(QKeySequence("r"), self, activated=self._on_toggle_reject)
 
     # ------------------------------------------------------------------
     # Populate / refresh thumbnail strip
@@ -386,21 +395,6 @@ class FrameReviewDialog(QDialog):
         )
         # Re-show to update button label + stats
         self._show_frame(idx)
-
-    # ------------------------------------------------------------------
-    # Keyboard navigation
-    # ------------------------------------------------------------------
-
-    def keyPressEvent(self, event):
-        key = event.key()
-        if key in (Qt.Key.Key_Left, Qt.Key.Key_Up):
-            self._on_prev()
-        elif key in (Qt.Key.Key_Right, Qt.Key.Key_Down):
-            self._on_next()
-        elif key == Qt.Key.Key_R:
-            self._on_toggle_reject()
-        else:
-            super().keyPressEvent(event)
 
     # ------------------------------------------------------------------
     # Style
