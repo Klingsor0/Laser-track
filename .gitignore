@@ -11,3 +11,9 @@ wheels/
 
 # Laboratorio de pruebas
 pruebas/
+
+.venv-dash/
+.DS_Store
+*.json
+uploads/
+outputs/
