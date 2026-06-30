@@ -7,13 +7,21 @@ wheels/
 *.egg-info
 
 # Virtual environments
-.venv
+.venv*/
 
-# Laboratorio de pruebas
-pruebas/
+# PyInstaller
+*.spec
 
-.venv-dash/
+# Editor swap/temp files
+*.sw?
+*.swo
+*.swp
 .DS_Store
-*.json
+
+# Data / output directories
+pruebas/
 uploads/
 outputs/
+
+# User config (saved to home dir, not repo)
+*.json
