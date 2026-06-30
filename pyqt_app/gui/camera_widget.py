@@ -45,7 +45,8 @@ class PreviewLabel(QLabel):
         Coordinates are in the original frame's pixel space.
     """
 
-    roi_drawn = pyqtSignal(int, int, int, int)
+    roi_drawn           = pyqtSignal(int, int, int, int)
+    polygon_point_added = pyqtSignal(int)   # emits new total point count
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -139,6 +140,7 @@ class PreviewLabel(QLabel):
                 fx, fy = self._to_frame(p.x(), p.y())
                 self._poly_pts.append((fx, fy))
                 self.update()
+                self.polygon_point_added.emit(len(self._poly_pts))
             return
         if not self._drawing_enabled:
             return

@@ -32,6 +32,7 @@ from gui.camera_widget import CameraWidget
 from gui.config_panel import ConfigPanel
 from gui.curve_extraction_dialog import CurveExtractionDialog
 from gui.frame_review_dialog import FrameReviewDialog
+from gui.homography_dialog import HomographyCalibrationDialog
 from backend.acquisition_controller import (
     AcquisitionController, AcquisitionConfig,
     AcquisitionThread, FrameResult,
@@ -499,11 +500,24 @@ class MainWindow(QMainWindow):
         self._camera.setMinimumWidth(400)
         left_layout.addWidget(self._camera, stretch=1)
 
+        cam_btn_row = QHBoxLayout()
         self._btn_settings = QPushButton("⚙  Camera Settings  ▼")
         self._btn_settings.setCheckable(True)
         self._btn_settings.setChecked(False)
         self._btn_settings.toggled.connect(self._on_settings_toggled)
-        left_layout.addWidget(self._btn_settings)
+        cam_btn_row.addWidget(self._btn_settings)
+
+        self._btn_calibrate = QPushButton("Calibrate H…")
+        self._btn_calibrate.setFixedWidth(110)
+        self._btn_calibrate.clicked.connect(self._on_open_homography_dialog)
+        cam_btn_row.addWidget(self._btn_calibrate)
+
+        self._lbl_calib_status = QLabel("No H")
+        self._lbl_calib_status.setStyleSheet("color:#556655; font-size:10px;")
+        self._lbl_calib_status.setFixedWidth(60)
+        cam_btn_row.addWidget(self._lbl_calib_status)
+
+        left_layout.addLayout(cam_btn_row)
 
         self._config_panel = ConfigPanel()
         self._config_panel.setVisible(False)
@@ -543,6 +557,25 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         root.addWidget(splitter)
+
+    @pyqtSlot()
+    def _on_open_homography_dialog(self):
+        current_H = self._config_panel.get_config().homography
+
+        def _apply_H(H: np.ndarray):
+            cfg = self._config_panel.get_config()
+            cfg.homography = H
+            self._config_panel.set_config(cfg)          # updates internal state
+            self._camera.set_config(cfg)                # takes effect next frame
+            self._lbl_calib_status.setText("H ✓")
+            self._lbl_calib_status.setStyleSheet("color:#6EBA31; font-size:10px;")
+
+        dlg = HomographyCalibrationDialog(
+            on_accept=_apply_H,
+            current_H=current_H,
+            parent=self,
+        )
+        dlg.exec()
 
     @pyqtSlot()
     def _on_open_reference_dialog(self):
