@@ -31,6 +31,7 @@ from PyQt6.QtCore import Qt, pyqtSlot
 
 from gui.camera_widget import CameraWidget
 from gui.config_panel import ConfigPanel
+from gui.homography_dialog import HomographyCalibrationDialog
 from backend.curve_acquisition import CurveConfig, CurveResult, FixedFrames, CurveAcquisitionThread
 import snake1 as snk
 
@@ -84,10 +85,23 @@ class CurveExtractionDialog(QDialog):
         self._camera.setMinimumWidth(420)
         left_lay.addWidget(self._camera, stretch=1)
 
+        cam_btn_row = QHBoxLayout()
         self._btn_settings = QPushButton("⚙  Camera Settings  ▼")
         self._btn_settings.setCheckable(True)
         self._btn_settings.toggled.connect(self._on_settings_toggled)
-        left_lay.addWidget(self._btn_settings)
+        cam_btn_row.addWidget(self._btn_settings)
+
+        self._btn_calibrate_h = QPushButton("Calibrate H…")
+        self._btn_calibrate_h.setFixedWidth(110)
+        self._btn_calibrate_h.clicked.connect(self._on_open_homography_dialog)
+        cam_btn_row.addWidget(self._btn_calibrate_h)
+
+        self._lbl_h_status = QLabel("No H")
+        self._lbl_h_status.setStyleSheet("color:#556655; font-size:10px;")
+        self._lbl_h_status.setFixedWidth(60)
+        cam_btn_row.addWidget(self._lbl_h_status)
+
+        left_lay.addLayout(cam_btn_row)
 
         self._config_panel = ConfigPanel()
         self._config_panel.setVisible(False)
@@ -470,6 +484,27 @@ class CurveExtractionDialog(QDialog):
         self._camera.set_editing_mode(checked)
         arrow = "▲" if checked else "▼"
         self._btn_settings.setText(f"⚙  Camera Settings  {arrow}")
+
+    @pyqtSlot()
+    def _on_open_homography_dialog(self):
+        current_H = self._config_panel.get_config().homography
+        initial_frame = self._camera.get_last_frame()
+
+        def _apply_H(H):
+            cfg = self._config_panel.get_config()
+            cfg.homography = H
+            self._config_panel.set_config(cfg)
+            self._camera.set_config(cfg)
+            self._lbl_h_status.setText("H ✓")
+            self._lbl_h_status.setStyleSheet("color:#6EBA31; font-size:10px;")
+
+        dlg = HomographyCalibrationDialog(
+            on_apply=_apply_H,
+            initial_frame=initial_frame,
+            current_H=current_H,
+            parent=self,
+        )
+        dlg.exec()
 
     def _on_accept(self):
         if self.result is None:
