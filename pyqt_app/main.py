@@ -561,17 +561,19 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _on_open_homography_dialog(self):
         current_H = self._config_panel.get_config().homography
+        initial_frame = self._camera.get_last_frame()
 
         def _apply_H(H: np.ndarray):
             cfg = self._config_panel.get_config()
             cfg.homography = H
-            self._config_panel.set_config(cfg)          # updates internal state
-            self._camera.set_config(cfg)                # takes effect next frame
+            self._config_panel.set_config(cfg)
+            self._camera.set_config(cfg)
             self._lbl_calib_status.setText("H ✓")
             self._lbl_calib_status.setStyleSheet("color:#6EBA31; font-size:10px;")
 
         dlg = HomographyCalibrationDialog(
-            on_accept=_apply_H,
+            on_apply=_apply_H,
+            initial_frame=initial_frame,
             current_H=current_H,
             parent=self,
         )
