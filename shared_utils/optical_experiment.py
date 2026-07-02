@@ -398,11 +398,13 @@ class AngleExtractor:
             0.01         # Accuracy for theta
         )
         
-        # Calculate angle from direction vector
-        angle_rad = np.arctan2(vy[0], vx[0])
+        # Normalize to point upward; measure from vertical (0° = vertical).
+        vx_n = vx[0] if vy[0] <= 0 else -vx[0]
+        vy_n = vy[0] if vy[0] <= 0 else -vy[0]
+        angle_rad = np.arctan2(vx_n, -vy_n)
         angle_deg = angle_rad * 180 / np.pi
-        
-        return angle_deg, (vx[0], vy[0]), (x0[0], y0[0])
+
+        return angle_deg, (vx_n, vy_n), (x0[0], y0[0])
     
     @staticmethod
     def calculate_angle_statistics(angles):

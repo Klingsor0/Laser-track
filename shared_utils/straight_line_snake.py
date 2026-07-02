@@ -216,13 +216,18 @@ def extract_line_parameters(snake_points):
         0.01
     )
     
-    # Calculate angle from direction vector
-    angle_rad = np.arctan2(vy[0], vx[0])
+    # Normalize direction to always point upward (vy <= 0 in image coords where y
+    # increases downward), so the same physical line always maps to the same angle.
+    vx_n = vx[0] if vy[0] <= 0 else -vx[0]
+    vy_n = vy[0] if vy[0] <= 0 else -vy[0]
+
+    # Angle from vertical: 0° = vertical, positive = tilted right, negative = tilted left.
+    angle_rad = np.arctan2(vx_n, -vy_n)
     angle_deg = angle_rad * 180 / np.pi
-    
+
     # Calculate slope (m) and intercept (b) for line equation y = mx + b
-    if abs(vx[0]) > 1e-6:  # Not vertical
-        slope = vy[0] / vx[0]
+    if abs(vx_n) > 1e-6:  # Not vertical
+        slope = vy_n / vx_n
         intercept = y0[0] - slope * x0[0]
     else:  # Vertical line
         slope = np.inf
