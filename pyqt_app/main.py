@@ -8,10 +8,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'shared_utils'))
 sys.path.insert(0, str(Path(__file__).parent))
 
+import json
+import csv
+from datetime import datetime
+
 import numpy as np
 import cv2 as cv
 
 from pathlib import Path
+
+_AUTOSAVE_PATH = Path.home() / '.laser_track_autosave.npz'
 
 import matplotlib
 matplotlib.use('QtAgg')
@@ -41,6 +47,74 @@ from backend.camera_config import CameraConfig
 from optical_experiment import CaptureSession
 
 _DEFAULT_CFG_PATH = Path.home() / '.laser_track_camera.json'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Session serialization helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _write_sessions_npz(sessions: list, path) -> None:
+    """Serialize sessions (frames + metadata) to a compressed .npz file."""
+    arrays = {}
+    meta_sessions = []
+    for i, s in enumerate(sessions):
+        if s.frames:
+            try:
+                arrays[f'frames_{i}'] = np.stack(s.frames)
+            except ValueError:
+                pass  # mixed shapes — frames omitted for this session
+        snake_json = [
+            sr.tolist() if sr is not None else None
+            for sr in (s.snake_results or [])
+        ]
+        meta_sessions.append({
+            'session_id': s.session_id,
+            'distance': s.distance,
+            'unit': s.unit,
+            'description': s.description,
+            'timestamp': s.timestamp.isoformat(),
+            'num_frames': s.num_frames,
+            'angles': s.angles,
+            'rejected': s.rejected,
+            'snake_results': snake_json,
+            'roi_params': s.roi_params,
+            'snake_params': s.snake_params,
+            'extraction_params': s.extraction_params,
+        })
+    arrays['meta'] = np.array([json.dumps({'version': 1, 'sessions': meta_sessions})])
+    np.savez_compressed(path, **arrays)
+
+
+def _read_sessions_npz(path) -> list:
+    """Load CaptureSession objects from a .npz file written by _write_sessions_npz."""
+    data = np.load(path, allow_pickle=False)
+    payload = json.loads(str(data['meta'][0]))
+    sessions = []
+    for i, sm in enumerate(payload['sessions']):
+        s = CaptureSession(
+            distance=sm['distance'],
+            unit=sm['unit'],
+            description=sm.get('description', ''),
+        )
+        s.session_id = sm['session_id']
+        s.timestamp = datetime.fromisoformat(sm['timestamp'])
+        s.angles = sm['angles']
+        s.rejected = sm.get('rejected', [False] * len(sm['angles']))
+        s.num_frames = sm['num_frames']
+        s.roi_params = sm.get('roi_params')
+        s.snake_params = sm.get('snake_params')
+        s.extraction_params = sm.get('extraction_params')
+        key = f'frames_{i}'
+        if key in data:
+            arr = data[key]
+            s.frames = [arr[j] for j in range(len(arr))]
+        snake_raw = sm.get('snake_results') or []
+        s.snake_results = [
+            np.array(sr, dtype=np.float32) if sr is not None else None
+            for sr in snake_raw
+        ]
+        sessions.append(s)
+    return sessions
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -114,6 +188,11 @@ class AcquisitionPanel(QWidget):
         self._sessions: list[CaptureSession] = []
         self._current_angles: list[float] = []
         self._build_ui()
+        if _AUTOSAVE_PATH.exists():
+            self._lbl_autosave.setText(
+                f"Previous autosave found — use Load to recover:\n{_AUTOSAVE_PATH}"
+            )
+            self._lbl_autosave.setStyleSheet("color: #c4a84a; font-size: 10px;")
 
     def attach_camera(self, camera_widget: CameraWidget) -> None:
         """Connect this panel to a CameraWidget instance."""
@@ -259,6 +338,23 @@ class AcquisitionPanel(QWidget):
         clear_btn.clicked.connect(self._on_clear_sessions)
         btn_row_sess.addWidget(clear_btn)
         sess_lay.addLayout(btn_row_sess)
+
+        btn_row_io = QHBoxLayout()
+        self._btn_save = QPushButton("Save…")
+        self._btn_save.clicked.connect(self._on_save_sessions)
+        btn_row_io.addWidget(self._btn_save)
+        self._btn_load = QPushButton("Load…")
+        self._btn_load.clicked.connect(self._on_load_sessions)
+        btn_row_io.addWidget(self._btn_load)
+        self._btn_csv = QPushButton("Export CSV…")
+        self._btn_csv.clicked.connect(self._on_export_csv)
+        btn_row_io.addWidget(self._btn_csv)
+        sess_lay.addLayout(btn_row_io)
+
+        self._lbl_autosave = QLabel("")
+        self._lbl_autosave.setStyleSheet("color: #556655; font-size: 10px;")
+        self._lbl_autosave.setWordWrap(True)
+        sess_lay.addWidget(self._lbl_autosave)
 
         root.addWidget(sess_grp)
         root.addStretch()
@@ -426,7 +522,7 @@ class AcquisitionPanel(QWidget):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _add_session(self, session: CaptureSession):
+    def _add_session(self, session: CaptureSession, *, do_autosave: bool = True):
         self._sessions.append(session)
         stats = session.get_statistics()
         row = self._table.rowCount()
@@ -449,6 +545,108 @@ class AcquisitionPanel(QWidget):
         else:
             self._table.setItem(row, 3, _cell("—"))
             self._table.setItem(row, 4, _cell("—"))
+
+        if do_autosave:
+            self._autosave()
+
+    # ── Save / Load / Export ──────────────────────────────────────────────────
+
+    @pyqtSlot()
+    def _on_save_sessions(self):
+        if not self._sessions:
+            QMessageBox.information(self, "No sessions", "No sessions to save.")
+            return
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Sessions",
+            str(Path.home() / 'laser_sessions.npz'),
+            "Session files (*.npz)",
+        )
+        if not path:
+            return
+        try:
+            _write_sessions_npz(self._sessions, path)
+            self._lbl_autosave.setText(
+                f"Saved {len(self._sessions)} session(s) → {path}"
+            )
+            self._lbl_autosave.setStyleSheet("color: #6EBA31; font-size: 10px;")
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
+
+    @pyqtSlot()
+    def _on_load_sessions(self):
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load Sessions",
+            str(Path.home()),
+            "Session files (*.npz)",
+        )
+        if not path:
+            return
+        try:
+            loaded = _read_sessions_npz(path)
+        except Exception as e:
+            QMessageBox.critical(self, "Load failed", str(e))
+            return
+        for session in loaded:
+            self._add_session(session, do_autosave=False)
+        self._autosave()
+        self._lbl_autosave.setText(
+            f"Loaded {len(loaded)} session(s) from {path}"
+        )
+        self._lbl_autosave.setStyleSheet("color: #6EBA31; font-size: 10px;")
+
+    @pyqtSlot()
+    def _on_export_csv(self):
+        if not self._sessions:
+            QMessageBox.information(self, "No sessions", "No sessions to export.")
+            return
+        from PyQt6.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export CSV",
+            str(Path.home() / 'laser_angles.csv'),
+            "CSV files (*.csv)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, 'w', newline='') as f:
+                w = csv.writer(f)
+                w.writerow([
+                    'session_id', 'timestamp', 'distance', 'unit',
+                    'n_frames', 'n_accepted',
+                    'mean_deg', 'std_deg', 'sem_deg',
+                    'ci95_lower', 'ci95_upper',
+                ])
+                for s in self._sessions:
+                    stats = s.get_filtered_statistics() or s.get_statistics()
+                    if not stats:
+                        continue
+                    w.writerow([
+                        s.session_id,
+                        s.timestamp.isoformat(),
+                        s.distance, s.unit,
+                        s.num_frames, stats['n_frames'],
+                        f"{stats['mean']:.6f}",
+                        f"{stats['std']:.6f}",
+                        f"{stats['sem']:.6f}",
+                        f"{stats['ci_95_lower']:.6f}",
+                        f"{stats['ci_95_upper']:.6f}",
+                    ])
+            self._lbl_autosave.setText(f"CSV exported → {path}")
+            self._lbl_autosave.setStyleSheet("color: #6EBA31; font-size: 10px;")
+        except Exception as e:
+            QMessageBox.critical(self, "Export failed", str(e))
+
+    def _autosave(self):
+        try:
+            _write_sessions_npz(self._sessions, _AUTOSAVE_PATH)
+            self._lbl_autosave.setText(
+                f"Autosaved {len(self._sessions)} session(s)"
+            )
+            self._lbl_autosave.setStyleSheet("color: #556655; font-size: 10px;")
+        except Exception:
+            pass
 
     def _reset_controls(self):
         connected = (
