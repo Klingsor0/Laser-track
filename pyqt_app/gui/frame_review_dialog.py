@@ -75,8 +75,11 @@ class _FrameThumb(QFrame):
     def _set_pixmap(self, bgr: np.ndarray):
         rgb = cv.cvtColor(bgr, cv.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
+        if w <= 0 or h <= 0:
+            return
         scale = min(self._THUMB_W / w, self._THUMB_H / h, 1.0)
-        tw, th = int(w * scale), int(h * scale)
+        tw = max(1, int(w * scale))
+        th = max(1, int(h * scale))
         rgb = cv.resize(rgb, (tw, th), interpolation=cv.INTER_AREA)
         qi = QImage(rgb.data, tw, th, tw * 3, QImage.Format.Format_RGB888)
         self._img_lbl.setPixmap(QPixmap.fromImage(qi))

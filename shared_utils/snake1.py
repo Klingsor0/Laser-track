@@ -83,18 +83,20 @@ def optimize_snake_greedy(image, initial_snake,
                          num_iterations=100,
                          window_size=5,
                          alpha=0.01, beta=0.1, gamma=1.0,
-                         threshold=0.01):
+                         threshold=0.01,
+                         callback=None):
     """
-    Greedy optimization: move each point to locally best position
+    Greedy optimization: move each point to locally best position.
 
-    threshold: stop if total energy improvement < threshold
+    threshold : stop early if total energy improvement < threshold
+    callback  : optional callable(iteration, snake_list, total_improvement)
+                called after every iteration so callers can show live progress.
+                Emit every N iterations to avoid flooding; convergence is always
+                reported because total_improvement < threshold on that call.
     """
-    # Precompute edge map
     gradient_x = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
     gradient_y = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
     edge_map = np.sqrt(gradient_x**2 + gradient_y**2)
-
-    # Normalize edge map to [0, 1]
     edge_map = edge_map / (edge_map.max() + 1e-10)
 
     snake = initial_snake.copy()
@@ -105,21 +107,19 @@ def optimize_snake_greedy(image, initial_snake,
     for iteration in range(num_iterations):
         total_improvement = 0
 
-        # Visit each point (skip endpoints if fixed)
         for i in range(1, n-1):
             best_x, best_y, improvement = find_best_position(
                 snake, i, edge_map, window_size, alpha, beta, gamma
             )
-
-            # Move to best position
             snake[i] = [best_x, best_y]
             total_improvement += improvement
 
         energy_history.append(total_improvement)
 
-        # Stop if converged
+        if callback is not None:
+            callback(iteration, list(snake), total_improvement)
+
         if total_improvement < threshold:
-            print(f"Converged at iteration {iteration}")
             break
 
     return snake, energy_history

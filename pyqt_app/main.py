@@ -50,6 +50,37 @@ _DEFAULT_CFG_PATH = Path.home() / '.laser_track_camera.json'
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Statistics helpers (distribution-free)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _bootstrap_ci(arr: np.ndarray, n_boot: int = 1000, ci: float = 0.95):
+    """Distribution-free bootstrap CI for the mean. Returns (mean, lo, hi)."""
+    arr = np.asarray(arr, dtype=float)
+    if len(arr) < 2:
+        m = float(arr.mean()) if len(arr) else 0.0
+        return m, m, m
+    rng = np.random.default_rng(42)
+    boots = np.array([rng.choice(arr, size=len(arr), replace=True).mean()
+                      for _ in range(n_boot)])
+    alpha = (1 - ci) / 2
+    return float(arr.mean()), float(np.quantile(boots, alpha)), float(np.quantile(boots, 1 - alpha))
+
+
+def _mad_outlier_mask(angles: np.ndarray, threshold: float = 3.5) -> np.ndarray:
+    """Modified Z-score (MAD-based) outlier detection. True = outlier.
+
+    Works for heavy-tailed and near-uniform distributions without assuming
+    normality.  threshold=3.5 is the standard recommendation (Iglewicz & Hoaglin).
+    """
+    arr = np.asarray(angles, dtype=float)
+    med = np.median(arr)
+    mad = np.median(np.abs(arr - med))
+    if mad < 1e-10:
+        return np.zeros(len(arr), dtype=bool)
+    return 0.6745 * np.abs(arr - med) / mad > threshold
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Session serialization helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -172,6 +203,77 @@ class AngleHistogram(QWidget):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Session trend plot
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SessionTrendPlot(QWidget):
+    """
+    Matplotlib widget: mean angle (°) vs. distance (mm) across all sessions.
+
+    Points sorted by distance on the X-axis and connected by a line.
+    Shaded ribbon = 95 % bootstrap CI (distribution-free).
+    Multiple sessions at the same distance appear as separate scatter points.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        fig = Figure(figsize=(3, 2.4), dpi=80, facecolor='#0d1117')
+        fig.subplots_adjust(left=0.18, right=0.97, top=0.86, bottom=0.22)
+        self._canvas = FigureCanvasQTAgg(fig)
+        self._ax = fig.add_subplot(111)
+        self._style_ax()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._canvas)
+
+    def _style_ax(self):
+        ax = self._ax
+        ax.set_facecolor('#0d1117')
+        ax.tick_params(colors='#c4e49a', labelsize=6)
+        for spine in ax.spines.values():
+            spine.set_edgecolor('#447130')
+        ax.set_xlabel('Distance (mm)', color='#c4e49a', fontsize=7)
+        ax.set_ylabel('Angle (°)',     color='#c4e49a', fontsize=7)
+
+    def plot(self, sessions: list) -> None:
+        self._ax.clear()
+        self._style_ax()
+
+        active = [s for s in sessions
+                  if s.get_filtered_statistics() or s.get_statistics()]
+        if not active:
+            self._ax.set_title('No sessions', color='#888', fontsize=7)
+            self._canvas.draw()
+            return
+
+        # Collect per-session stats, then sort by distance
+        pts = []
+        for s in active:
+            accepted = s.get_accepted_angles()
+            arr = np.array(accepted if accepted else s.angles, dtype=float)
+            m, lo, hi = _bootstrap_ci(arr)
+            pts.append((s.distance, m, lo, hi))
+        pts.sort(key=lambda t: t[0])
+
+        dists = np.array([p[0] for p in pts])
+        means = np.array([p[1] for p in pts])
+        los   = np.array([p[2] for p in pts])
+        his   = np.array([p[3] for p in pts])
+
+        self._ax.fill_between(dists, los, his, alpha=0.22, color='#6EBA31', zorder=2)
+        self._ax.plot(dists, means, 'o-', color='#6EBA31', linewidth=1.2,
+                      markersize=4, zorder=3)
+
+        self._ax.set_title('Angle vs. distance  (95 % CI)', color='#c4e49a', fontsize=7)
+        self._canvas.draw()
+
+    def clear(self) -> None:
+        self._ax.clear()
+        self._style_ax()
+        self._canvas.draw()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Acquisition panel (right side)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -202,6 +304,7 @@ class AcquisitionPanel(QWidget):
             lambda _: self._btn_start.setEnabled(True)
         )
         camera_widget.disconnected.connect(self._on_camera_disconnected)
+        camera_widget.source_type_changed.connect(self._on_source_type_changed)
 
     # ── UI ────────────────────────────────────────────────────────────────────
 
@@ -223,7 +326,8 @@ class AcquisitionPanel(QWidget):
         row1.addWidget(self._dist)
 
         row1.addSpacing(16)
-        row1.addWidget(QLabel("Frames:"))
+        self._lbl_nframes = QLabel("Frames:")
+        row1.addWidget(self._lbl_nframes)
         self._nframes = QSpinBox()
         self._nframes.setRange(1, 500)
         self._nframes.setValue(30)
@@ -231,7 +335,8 @@ class AcquisitionPanel(QWidget):
         cfg_lay.addLayout(row1)
 
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Interval (ms):"))
+        self._lbl_interval = QLabel("Interval (ms):")
+        row2.addWidget(self._lbl_interval)
         self._interval = QSpinBox()
         self._interval.setRange(50, 5000)
         self._interval.setValue(200)
@@ -334,10 +439,41 @@ class AcquisitionPanel(QWidget):
         self._btn_review.clicked.connect(self._on_review_session)
         btn_row_sess.addWidget(self._btn_review)
 
-        clear_btn = QPushButton("Clear all sessions")
+        self._btn_delete = QPushButton("Delete row")
+        self._btn_delete.setEnabled(False)
+        self._btn_delete.setToolTip("Remove the selected session from the table.")
+        self._btn_delete.clicked.connect(self._on_delete_session)
+        btn_row_sess.addWidget(self._btn_delete)
+
+        clear_btn = QPushButton("Clear all")
         clear_btn.clicked.connect(self._on_clear_sessions)
         btn_row_sess.addWidget(clear_btn)
         sess_lay.addLayout(btn_row_sess)
+
+        # Outlier exclusion row
+        outlier_row = QHBoxLayout()
+        outlier_row.addWidget(QLabel("MAD ×:"))
+        self._sp_mad_thresh = QDoubleSpinBox()
+        self._sp_mad_thresh.setRange(1.0, 10.0)
+        self._sp_mad_thresh.setSingleStep(0.5)
+        self._sp_mad_thresh.setDecimals(1)
+        self._sp_mad_thresh.setValue(3.5)
+        self._sp_mad_thresh.setFixedWidth(58)
+        self._sp_mad_thresh.setToolTip(
+            "Modified Z-score threshold (MAD-based).\n"
+            "3.5 = standard; lower = stricter.\n"
+            "Works for heavy-tailed and near-uniform data."
+        )
+        outlier_row.addWidget(self._sp_mad_thresh)
+        self._btn_mark_outliers = QPushButton("Mark outliers")
+        self._btn_mark_outliers.setEnabled(False)
+        self._btn_mark_outliers.setToolTip(
+            "Mark per-frame angle measurements in the selected session\n"
+            "as rejected using the MAD modified Z-score method."
+        )
+        self._btn_mark_outliers.clicked.connect(self._on_mark_outliers)
+        outlier_row.addWidget(self._btn_mark_outliers)
+        sess_lay.addLayout(outlier_row)
 
         btn_row_io = QHBoxLayout()
         self._btn_save = QPushButton("Save…")
@@ -356,10 +492,24 @@ class AcquisitionPanel(QWidget):
         self._lbl_autosave.setWordWrap(True)
         sess_lay.addWidget(self._lbl_autosave)
 
+        self._trend_plot = SessionTrendPlot()
+        self._trend_plot.setMinimumHeight(192)
+        sess_lay.addWidget(self._trend_plot)
+
         root.addWidget(sess_grp)
         root.addStretch()
 
     # ── Slots ─────────────────────────────────────────────────────────────────
+
+    @pyqtSlot(str)
+    def _on_source_type_changed(self, source_type: str) -> None:
+        is_image = source_type == "image"
+        self._lbl_nframes.setEnabled(not is_image)
+        self._nframes.setEnabled(not is_image)
+        self._lbl_interval.setEnabled(not is_image)
+        self._interval.setEnabled(not is_image)
+        if is_image:
+            self._nframes.setValue(1)
 
     @pyqtSlot()
     def _on_start(self):
@@ -400,6 +550,11 @@ class AcquisitionPanel(QWidget):
         self._lbl_status.setText("Acquiring…")
 
         self._thread.start()
+
+        if (self._camera_widget.source_type == "image"):
+            frame = self._camera_widget.get_last_frame()
+            if frame is not None:
+                self._thread.inject_frame(frame)
 
     @pyqtSlot()
     def _on_stop(self):
@@ -478,21 +633,24 @@ class AcquisitionPanel(QWidget):
         self._sessions.clear()
         self._table.setRowCount(0)
         self._histogram.clear()
+        self._trend_plot.clear()
 
     @pyqtSlot()
     def _on_table_selection_changed(self):
         rows = self._table.selectionModel().selectedRows()
-        if not rows:
-            self._btn_review.setEnabled(False)
+        has_sel = bool(rows) and rows[0].row() < len(self._sessions)
+        self._btn_review.setEnabled(has_sel)
+        self._btn_delete.setEnabled(has_sel)
+        self._btn_mark_outliers.setEnabled(has_sel)
+        if not has_sel:
             return
-        row = rows[0].row()
-        self._btn_review.setEnabled(row < len(self._sessions))
-        if row < len(self._sessions):
-            s = self._sessions[row]
-            self._histogram.plot(
-                s.angles,
-                title=f"Session {s.session_id} — {s.num_frames} frames @ {s.distance} {s.unit}"
-            )
+        s = self._sessions[rows[0].row()]
+        accepted = s.get_accepted_angles()
+        angles_to_show = accepted if accepted else s.angles
+        self._histogram.plot(
+            angles_to_show,
+            title=f"Session {s.session_id} — {len(angles_to_show)} accepted @ {s.distance} {s.unit}"
+        )
 
     @pyqtSlot()
     def _on_review_session(self):
@@ -519,6 +677,66 @@ class AcquisitionPanel(QWidget):
             self._table.item(row, 3).setText(f"{stats['mean']:.3f}")
             self._table.item(row, 3).setForeground(green)
             self._table.item(row, 4).setText(f"{stats['std']:.3f}")
+        self._trend_plot.plot(self._sessions)
+        self._autosave()
+
+    @pyqtSlot()
+    def _on_delete_session(self):
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if row >= len(self._sessions):
+            return
+        sid = self._sessions[row].session_id
+        ans = QMessageBox.question(
+            self, "Delete session",
+            f"Remove session {sid} from the table? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if ans != QMessageBox.StandardButton.Yes:
+            return
+        self._sessions.pop(row)
+        self._table.removeRow(row)
+        self._trend_plot.plot(self._sessions)
+        self._autosave()
+
+    @pyqtSlot()
+    def _on_mark_outliers(self):
+        rows = self._table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        if row >= len(self._sessions):
+            return
+        s = self._sessions[row]
+        if not s.angles:
+            return
+        threshold = self._sp_mad_thresh.value()
+        angles = np.array(s.angles, dtype=float)
+        mask = _mad_outlier_mask(angles, threshold)
+        n_marked = int(mask.sum())
+        s.rejected = mask.tolist()
+        # Refresh table row
+        stats = s.get_filtered_statistics() or s.get_statistics()
+        if stats:
+            green = QColor("#6EBA31")
+            self._table.item(row, 3).setText(f"{stats['mean']:.3f}")
+            self._table.item(row, 3).setForeground(green)
+            self._table.item(row, 4).setText(f"{stats['std']:.3f}")
+        # Refresh histogram with accepted angles
+        accepted = s.get_accepted_angles()
+        self._histogram.plot(
+            accepted if accepted else s.angles,
+            title=f"Session {s.session_id} — {len(accepted)} accepted @ {s.distance} {s.unit}"
+        )
+        self._trend_plot.plot(self._sessions)
+        self._autosave()
+        self._lbl_autosave.setText(
+            f"{n_marked} outlier(s) marked in session {s.session_id}  "
+            f"(MAD ×{threshold})"
+        )
+        self._lbl_autosave.setStyleSheet("color: #c4a84a; font-size: 10px;")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -546,6 +764,7 @@ class AcquisitionPanel(QWidget):
             self._table.setItem(row, 3, _cell("—"))
             self._table.setItem(row, 4, _cell("—"))
 
+        self._trend_plot.plot(self._sessions)
         if do_autosave:
             self._autosave()
 

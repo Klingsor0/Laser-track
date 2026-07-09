@@ -98,9 +98,10 @@ try:
             thread.progress.connect(dialog.on_progress)
         """
 
-        curve_extracted      = Signal(object)    # np.ndarray (N, 2)
-        acquisition_complete = Signal(object)    # CurveResult
-        progress             = Signal(int, int)  # (current, total)
+        curve_extracted      = Signal(object)         # np.ndarray (N, 2)
+        acquisition_complete = Signal(object)         # CurveResult
+        progress             = Signal(int, int)       # (current, total)
+        iteration_update     = Signal(int, int, object, float)  # (frame, iter, snake, improvement)
         error                = Signal(str)
 
         def __init__(self, initial_snake: np.ndarray,
@@ -112,7 +113,7 @@ try:
             self._config        = config
             self._criterion     = criterion
             self._queue: queue.Queue = queue.Queue()
-            self._running       = False
+            self._running       = True   # True from init so pre-start on_frame() calls queue correctly
             self._curves: list[np.ndarray] = []
 
         def on_frame(self, bgr: np.ndarray):
@@ -120,8 +121,11 @@ try:
             if self._running:
                 self._queue.put(bgr)
 
+        def request_stop(self):
+            """Non-blocking stop. Result delivered via acquisition_complete or error signal."""
+            self._running = False
+
         def run(self):
-            self._running = True
             self._curves  = []
             cfg           = self._config
             last_time     = 0.0
@@ -141,15 +145,28 @@ try:
                     rgb  = cv.cvtColor(bgr, cv.COLOR_BGR2RGB)
                     edge = rgb[:, :, 1].astype(np.uint8)
 
+                    frame_num = len(self._curves)
+
+                    def _iter_cb(iteration, snake, improvement,
+                                 _fn=frame_num, _thr=cfg.threshold):
+                        converged = improvement < _thr
+                        if converged or iteration % 5 == 0:
+                            self.iteration_update.emit(
+                                _fn, iteration,
+                                np.array(snake, dtype=float),
+                                float(improvement),
+                            )
+
                     optimized, _ = snk.optimize_snake_greedy(
                         edge,
-                        self._initial_snake,   # copied internally by optimize_snake_greedy
+                        self._initial_snake,
                         num_iterations=cfg.num_iterations,
                         window_size=cfg.window_size,
                         alpha=cfg.alpha,
                         beta=cfg.beta,
                         gamma=cfg.gamma,
                         threshold=cfg.threshold,
+                        callback=_iter_cb,
                     )
                     curve = np.array(optimized, dtype=float)
                     self._curves.append(curve)
@@ -167,9 +184,11 @@ try:
 
             if self._curves:
                 self.acquisition_complete.emit(_build_result(self._curves))
+            else:
+                self.error.emit("Stopped before any frames were processed.")
 
         def stop(self) -> 'CurveResult | None':
-            """Early stop — returns partial result if any frames were captured."""
+            """Blocking stop for cleanup (e.g. closeEvent). Prefer request_stop() from UI."""
             self._running = False
             self.wait()
             return _build_result(self._curves) if self._curves else None

@@ -312,6 +312,10 @@ try:
             if self._running:
                 self._queue.put(bgr)
 
+        def inject_frame(self, bgr: np.ndarray):
+            """Enqueue a frame unconditionally — used for static image sources."""
+            self._queue.put(bgr)
+
         def run(self):
             self._ctrl.start(self._config)
             self._running = True

@@ -21,9 +21,9 @@ import numpy as np
 
 from PyQt6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QSpinBox, QComboBox, QGroupBox, QSizePolicy,
+    QLineEdit, QSpinBox, QComboBox, QGroupBox, QSizePolicy, QFileDialog,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QPoint
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QPoint, QRect
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QPen, QColor
 
 from backend.camera_manager import CameraManager, CameraError, SourceType
@@ -46,7 +46,8 @@ class PreviewLabel(QLabel):
     """
 
     roi_drawn           = pyqtSignal(int, int, int, int)
-    polygon_point_added = pyqtSignal(int)   # emits new total point count
+    polygon_point_added = pyqtSignal(int)          # emits new total point count
+    measurement_done    = pyqtSignal(int, int, int, int)  # x1,y1,x2,y2 in frame pixels
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -55,12 +56,25 @@ class PreviewLabel(QLabel):
         self._drag_start: QPoint | None = None
         self._drag_end:   QPoint | None = None
 
-        # Set by _update_preview() after every rendered frame
+        # Set by update_frame_info() after every rendered frame (fit-to-label values)
         self._scale    = 1.0
         self._offset_x = 0
         self._offset_y = 0
         self._frame_w  = 1
         self._frame_h  = 1
+        self._disp_w   = 0   # pixmap width at fit scale (screen pixels)
+        self._disp_h   = 0   # pixmap height at fit scale (screen pixels)
+
+        # Zoom/pan state
+        # Scroll      → zoom anchored at cursor
+        # Ctrl+scroll → vertical pan
+        # Shift+scroll → horizontal pan
+        self._zoom  = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+
+        # Stored pixmap for zoom rendering (QLabel's internal pixmap stays empty)
+        self._zoomed_pixmap: QPixmap | None = None
 
         # Current ROI in frame coords (for persistent overlay after drawing)
         self._roi: tuple | None = None
@@ -72,8 +86,13 @@ class PreviewLabel(QLabel):
         self._axis_angle   = 0.0   # degrees
 
         # Polygon drawing mode — used by CurveExtractionDialog
-        self._poly_mode = False
+        self._poly_mode    = False
+        self._poly_visible = True   # False after Close Polygon (pts kept for reuse)
         self._poly_pts: list[tuple[int, int]] = []  # frame-space vertices
+
+        # 2-point measurement mode for px/mm calibration
+        self._measure_mode = False
+        self._measure_pts: list[tuple[int, int]] = []
 
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.setMouseTracking(True)
@@ -81,12 +100,15 @@ class PreviewLabel(QLabel):
     # ── Frame info ─────────────────────────────────────────────────────
 
     def update_frame_info(self, scale: float, offset_x: int, offset_y: int,
-                          frame_w: int, frame_h: int) -> None:
+                          frame_w: int, frame_h: int,
+                          disp_w: int = 0, disp_h: int = 0) -> None:
         self._scale    = scale
         self._offset_x = offset_x
         self._offset_y = offset_y
         self._frame_w  = frame_w
         self._frame_h  = frame_h
+        self._disp_w   = disp_w if disp_w > 0 else int(frame_w * scale)
+        self._disp_h   = disp_h if disp_h > 0 else int(frame_h * scale)
 
     def set_roi_overlay(self, roi: tuple | None) -> None:
         self._roi = roi
@@ -115,27 +137,109 @@ class PreviewLabel(QLabel):
 
     # ── Coordinate conversion ──────────────────────────────────────────
 
+    def _eff_transform(self):
+        """Return (effective_scale, eff_offset_x, eff_offset_y) accounting for zoom/pan."""
+        s   = self._scale * self._zoom
+        ox  = self._offset_x + self._disp_w * (1 - self._zoom) / 2 + self._pan_x
+        oy  = self._offset_y + self._disp_h * (1 - self._zoom) / 2 + self._pan_y
+        return s, ox, oy
+
     def _to_frame(self, px: int, py: int) -> tuple[int, int]:
-        if self._scale <= 0:
+        s, ox, oy = self._eff_transform()
+        if s <= 0:
             return (0, 0)
-        fx = int((px - self._offset_x) / self._scale)
-        fy = int((py - self._offset_y) / self._scale)
+        fx = int((px - ox) / s)
+        fy = int((py - oy) / s)
         return (
             max(0, min(self._frame_w - 1, fx)),
             max(0, min(self._frame_h - 1, fy)),
         )
 
     def _to_preview(self, fx: int, fy: int) -> tuple[int, int]:
-        return (
-            int(fx * self._scale + self._offset_x),
-            int(fy * self._scale + self._offset_y),
-        )
+        s, ox, oy = self._eff_transform()
+        return (int(fx * s + ox), int(fy * s + oy))
+
+    # ── Zoom / pan ─────────────────────────────────────────────────────
+
+    def setPixmap(self, pixmap: QPixmap) -> None:
+        """Store pixmap for custom zoom rendering; keep QLabel's internal pixmap empty."""
+        if pixmap.isNull():
+            self._zoomed_pixmap = None
+        else:
+            self._zoomed_pixmap = pixmap
+            super().setText("")   # prevent "No signal" text showing under pixmap
+        super().setPixmap(QPixmap())
+        self.update()
+
+    def setText(self, text: str) -> None:
+        self._zoomed_pixmap = None  # clear image when text replaces it
+        super().setText(text)
+        self.update()
+
+    def reset_zoom(self) -> None:
+        self._zoom = 1.0
+        self._pan_x = 0.0
+        self._pan_y = 0.0
+        self.update()
+
+    def wheelEvent(self, event):
+        if self._disp_w <= 0:
+            return
+        mods  = event.modifiers()
+        ctrl  = bool(mods & Qt.KeyboardModifier.ControlModifier)
+        shift = bool(mods & Qt.KeyboardModifier.ShiftModifier)
+        delta = event.angleDelta().y()
+
+        if ctrl and not shift:
+            # Ctrl+scroll → vertical pan (~20 px per notch)
+            self._pan_y += delta / 6
+            self.update()
+        elif shift and not ctrl:
+            # Shift+scroll → horizontal pan
+            self._pan_x += delta / 6
+            self.update()
+        else:
+            # Plain scroll → zoom anchored at cursor position
+            cursor = event.position().toPoint()
+            fx, fy = self._to_frame(cursor.x(), cursor.y())
+            factor   = 1.15 if delta > 0 else 1 / 1.15
+            new_zoom = max(1.0, min(20.0, self._zoom * factor))
+            if new_zoom == 1.0:
+                self._zoom  = 1.0
+                self._pan_x = 0.0
+                self._pan_y = 0.0
+            else:
+                self._zoom  = new_zoom
+                s   = self._scale * new_zoom
+                ox0 = self._offset_x + self._disp_w * (1 - new_zoom) / 2
+                oy0 = self._offset_y + self._disp_h * (1 - new_zoom) / 2
+                self._pan_x = cursor.x() - fx * s - ox0
+                self._pan_y = cursor.y() - fy * s - oy0
+            self.update()
+
+        event.accept()
 
     # ── Mouse events ───────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
+        if self._measure_mode:
+            if event.button() == Qt.MouseButton.LeftButton:
+                p = event.position().toPoint()
+                fx, fy = self._to_frame(p.x(), p.y())
+                self._measure_pts.append((fx, fy))
+                self.update()
+                if len(self._measure_pts) >= 2:
+                    x1, y1 = self._measure_pts[0]
+                    x2, y2 = self._measure_pts[1]
+                    self._measure_mode = False
+                    self._measure_pts.clear()
+                    self.setCursor(Qt.CursorShape.ArrowCursor)
+                    self.measurement_done.emit(x1, y1, x2, y2)
+            return
+
         if self._poly_mode:
             if event.button() == Qt.MouseButton.LeftButton:
+                self._poly_visible = True   # re-show overlay when adding vertices
                 p = event.position().toPoint()
                 fx, fy = self._to_frame(p.x(), p.y())
                 self._poly_pts.append((fx, fy))
@@ -181,14 +285,21 @@ class PreviewLabel(QLabel):
     # ── Polygon mode ───────────────────────────────────────────────────
 
     def enable_polygon_mode(self) -> None:
-        self._poly_mode = True
+        self._poly_mode    = True
+        self._poly_visible = True
         self._poly_pts.clear()
         self.setCursor(Qt.CursorShape.CrossCursor)
 
     def disable_polygon_mode(self) -> None:
-        self._poly_mode = False
+        self._poly_mode    = False
+        self._poly_visible = False
         self._poly_pts.clear()
         self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def hide_polygon_overlay(self) -> None:
+        """Hide the polygon overlay without discarding vertices (they can be reused)."""
+        self._poly_visible = False
         self.update()
 
     def get_polygon_pts(self) -> list[tuple[int, int]]:
@@ -198,20 +309,46 @@ class PreviewLabel(QLabel):
         self._poly_pts.clear()
         self.update()
 
+    # ── Measurement mode (2-point px/mm calibration) ───────────────────
+
+    def enable_measure_mode(self) -> None:
+        self._measure_mode = True
+        self._measure_pts.clear()
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+    def disable_measure_mode(self) -> None:
+        self._measure_mode = False
+        self._measure_pts.clear()
+        self.setCursor(
+            Qt.CursorShape.CrossCursor if self._poly_mode else Qt.CursorShape.ArrowCursor
+        )
+        self.update()
+
     # ── Paint overlay ──────────────────────────────────────────────────
 
     def paintEvent(self, event):
-        super().paintEvent(event)
+        super().paintEvent(event)   # QLabel draws background / "No signal" text
+
+        painter = QPainter(self)
+
+        # Draw zoomed pixmap (replaces QLabel's own pixmap rendering)
+        if self._zoomed_pixmap is not None and not self._zoomed_pixmap.isNull() and self._disp_w > 0:
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            draw_w = int(self._disp_w * self._zoom)
+            draw_h = int(self._disp_h * self._zoom)
+            draw_x = int(self._offset_x + self._disp_w * (1 - self._zoom) / 2 + self._pan_x)
+            draw_y = int(self._offset_y + self._disp_h * (1 - self._zoom) / 2 + self._pan_y)
+            painter.drawPixmap(QRect(draw_x, draw_y, draw_w, draw_h), self._zoomed_pixmap)
 
         has_drag = self._drawing and self._drag_start and self._drag_end
         has_roi  = self._roi is not None
         has_axis = self._axis_visible
-        has_poly = self._poly_mode and len(self._poly_pts) > 0
+        has_poly = self._poly_mode and self._poly_visible and len(self._poly_pts) > 0
+        has_meas = len(self._measure_pts) > 0
 
-        if not (has_drag or has_roi or has_axis or has_poly):
+        if not (has_drag or has_roi or has_axis or has_poly or has_meas):
+            painter.end()
             return
-
-        painter = QPainter(self)
 
         # Axis guideline (drawn first so ROI rectangle is on top)
         if has_axis:
@@ -229,8 +366,9 @@ class PreviewLabel(QLabel):
         elif has_roi:
             rx, ry, rw, rh = self._roi
             px, py = self._to_preview(rx, ry)
-            pw = int(rw * self._scale)
-            ph = int(rh * self._scale)
+            s, _, _ = self._eff_transform()
+            pw = int(rw * s)
+            ph = int(rh * s)
             pen = QPen(QColor("#6EBA31"), 2, Qt.PenStyle.SolidLine)
             painter.setPen(pen)
             painter.drawRect(px, py, pw, ph)
@@ -247,22 +385,27 @@ class PreviewLabel(QLabel):
             for px, py in preview_pts:
                 painter.drawEllipse(px - 3, py - 3, 6, 6)
 
+        # Measurement line (2-point px/mm calibration)
+        if has_meas:
+            pen = QPen(QColor("#FF8C00"), 2, Qt.PenStyle.SolidLine)
+            painter.setPen(pen)
+            mpts = [self._to_preview(fx, fy) for fx, fy in self._measure_pts]
+            for mx, my in mpts:
+                painter.drawEllipse(mx - 5, my - 5, 10, 10)
+            if len(mpts) == 2:
+                painter.drawLine(mpts[0][0], mpts[0][1], mpts[1][0], mpts[1][1])
+
         painter.end()
 
     def _draw_axis_line(self, painter: QPainter) -> None:
-        # Convert pivot (absolute frame pixels) to preview (label) coordinates
-        px = int(self._axis_x * self._scale + self._offset_x)
-        py = int(self._axis_y * self._scale + self._offset_y)
+        s, ox, oy = self._eff_transform()
+        px    = int(self._axis_x * s + ox)
+        py    = int(self._axis_y * s + oy)
+        top_y = int(oy)
+        bot_y = int(oy + self._frame_h * s)
 
-        # Vertical extent spans the full displayed frame area
-        top_y = int(self._offset_y)
-        bot_y = int(self._offset_y + self._frame_h * self._scale)
-
-        # Vertical guideline
         painter.setPen(QPen(QColor("#FFB800"), 2, Qt.PenStyle.SolidLine))
         painter.drawLine(px, top_y, px, bot_y)
-
-        # Pivot marker — filled circle at (axis_x, axis_y)
         painter.setPen(QPen(QColor("#FFB800"), 8,
                             Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
         painter.drawPoint(px, py)
@@ -355,10 +498,11 @@ class CameraWidget(QWidget):
         Emitted when camera goes offline.
     """
 
-    frame_ready    = pyqtSignal(np.ndarray)
-    frame_captured = pyqtSignal(np.ndarray)
-    connected      = pyqtSignal(str)
-    disconnected   = pyqtSignal()
+    frame_ready         = pyqtSignal(np.ndarray)
+    frame_captured      = pyqtSignal(np.ndarray)
+    connected           = pyqtSignal(str)
+    disconnected        = pyqtSignal()
+    source_type_changed = pyqtSignal(str)   # "webcam", "esp32", "image"
 
     # Preview size cap — keeps the UI responsive on large streams
     MAX_PREVIEW_W = 640
@@ -372,6 +516,7 @@ class CameraWidget(QWidget):
         self._config: CameraConfig = CameraConfig()
         self._editing: bool = False    # True while config panel is open
         self._preview_frozen: bool = False  # True during acquisition: shows annotated frame
+        self._img_path: str | None = None
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -400,7 +545,7 @@ class CameraWidget(QWidget):
         src_row = QHBoxLayout()
         src_row.addWidget(QLabel("Source:"))
         self._source_combo = QComboBox()
-        self._source_combo.addItems(["USB Webcam", "ESP32-CAM (WiFi)"])
+        self._source_combo.addItems(["USB Webcam", "ESP32-CAM (WiFi)", "Image File"])
         self._source_combo.currentIndexChanged.connect(self._on_source_changed)
         src_row.addWidget(self._source_combo)
         grp_layout.addLayout(src_row)
@@ -443,8 +588,27 @@ class CameraWidget(QWidget):
         esp_layout.addLayout(path_row)
         grp_layout.addWidget(self._esp_box)
 
-        # Default: show USB, hide ESP32
+        # Image file controls
+        self._img_box = QWidget()
+        img_layout = QVBoxLayout(self._img_box)
+        img_layout.setContentsMargins(0, 0, 0, 0)
+
+        img_row = QHBoxLayout()
+        self._img_path_label = QLabel("No file selected")
+        self._img_path_label.setStyleSheet("color:#888; font-size:10px;")
+        self._img_path_label.setWordWrap(True)
+        img_row.addWidget(self._img_path_label, stretch=1)
+
+        self._btn_browse_img = QPushButton("Browse…")
+        self._btn_browse_img.setFixedWidth(80)
+        self._btn_browse_img.clicked.connect(self._on_browse_image)
+        img_row.addWidget(self._btn_browse_img)
+        img_layout.addLayout(img_row)
+        grp_layout.addWidget(self._img_box)
+
+        # Default: show USB, hide ESP32 and image
         self._esp_box.setVisible(False)
+        self._img_box.setVisible(False)
 
         # Connect / Disconnect / Capture row
         btn_row = QHBoxLayout()
@@ -477,9 +641,37 @@ class CameraWidget(QWidget):
     def _on_source_changed(self, index: int):
         self._usb_box.setVisible(index == 0)
         self._esp_box.setVisible(index == 1)
+        self._img_box.setVisible(index == 2)
+        self.source_type_changed.emit(["webcam", "esp32", "image"][index])
+
+    @property
+    def source_type(self) -> str:
+        return ["webcam", "esp32", "image"][self._source_combo.currentIndex()]
 
     def _on_connect(self):
-        if self._source_combo.currentIndex() == 0:
+        idx = self._source_combo.currentIndex()
+        if idx == 2:
+            path = self._img_path
+            if not path:
+                path, _ = QFileDialog.getOpenFileName(
+                    self, "Open image", str(Path.home()),
+                    "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
+                )
+            if not path:
+                return
+            bgr = cv.imread(path)
+            if bgr is None:
+                self._status.setText(f"Could not read: {path}")
+                self._status.setStyleSheet("color: #cc4444;")
+                return
+            self._img_path = path
+            self._img_path_label.setText(Path(path).name)
+            self._img_path_label.setStyleSheet("color:#6EBA31; font-size:10px;")
+            self._on_frame(bgr)
+            self._set_connected_state(True, Path(path).name)
+            return
+
+        if idx == 0:
             source = str(self._usb_index.value())
         else:
             ip   = self._esp_ip.text().strip()
@@ -498,6 +690,16 @@ class CameraWidget(QWidget):
     def _on_disconnect(self):
         self._stop_thread()
         self._set_connected_state(False, "")
+
+    def _on_browse_image(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open image", str(Path.home()),
+            "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)"
+        )
+        if path:
+            self._img_path = path
+            self._img_path_label.setText(Path(path).name)
+            self._img_path_label.setStyleSheet("color:#c4e49a; font-size:10px;")
 
     def _on_capture(self):
         """Grab the last frame, apply full pipeline, emit as RGB for Workflow A."""
@@ -551,7 +753,7 @@ class CameraWidget(QWidget):
 
         offset_x = max(0, (self._preview.width()  - disp_w) // 2)
         offset_y = max(0, (self._preview.height() - disp_h) // 2)
-        self._preview.update_frame_info(scale, offset_x, offset_y, frame_w, frame_h)
+        self._preview.update_frame_info(scale, offset_x, offset_y, frame_w, frame_h, disp_w, disp_h)
         self._preview.set_roi_overlay(self._config.roi if show_roi_overlay else None)
         if show_roi_overlay:
             self._preview.set_axis(
@@ -599,6 +801,7 @@ class CameraWidget(QWidget):
         self._source_combo.setEnabled(not is_connected)
         self._usb_box.setEnabled(not is_connected)
         self._esp_box.setEnabled(not is_connected)
+        self._img_box.setEnabled(not is_connected)
 
         if is_connected:
             self._status.setText(f"Connected: {source}")

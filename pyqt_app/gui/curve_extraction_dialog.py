@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGroupBox,
     QLabel, QPushButton, QDoubleSpinBox, QSpinBox,
     QProgressBar, QDialogButtonBox, QFileDialog, QMessageBox,
-    QSizePolicy,
+    QInputDialog, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, pyqtSlot
 
@@ -33,6 +33,7 @@ from gui.camera_widget import CameraWidget
 from gui.config_panel import ConfigPanel
 from gui.homography_dialog import HomographyCalibrationDialog
 from backend.curve_acquisition import CurveConfig, CurveResult, FixedFrames, CurveAcquisitionThread
+from backend.camera_config import apply_acquisition_pipeline
 import snake1 as snk
 
 
@@ -60,6 +61,7 @@ class CurveExtractionDialog(QDialog):
         self._initial_snake: np.ndarray | None = None     # snake ready for acquisition
         self._thread: CurveAcquisitionThread | None = None
         self.result: CurveResult | None = None            # set on Accept
+        self._px_per_mm: float | None = None              # pixels per mm (None = uncalibrated)
 
         self._build_ui()
         self._apply_style()
@@ -155,8 +157,8 @@ class CurveExtractionDialog(QDialog):
         lay = QVBoxLayout(grp)
 
         hint = QLabel(
-            "1. Connect camera  2. Freeze a frame  "
-            "3. Click to add polygon vertices  4. Close polygon"
+            "1. Freeze  2. Click to add vertices  3. Close Polygon  "
+            "4. Start — add more vertices and re-close anytime to update snake"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #888; font-size: 10px;")
@@ -189,7 +191,7 @@ class CurveExtractionDialog(QDialog):
         row2.addWidget(self._btn_clear_poly)
         lay.addLayout(row2)
 
-        self._btn_close_poly = QPushButton("Close Polygon → Initialize Snake")
+        self._btn_close_poly = QPushButton("Close Polygon")
         self._btn_close_poly.setEnabled(False)
         self._btn_close_poly.clicked.connect(self._on_close_polygon)
         lay.addWidget(self._btn_close_poly)
@@ -198,8 +200,24 @@ class CurveExtractionDialog(QDialog):
         self._lbl_poly_status.setStyleSheet("color: #888; font-size: 10px;")
         lay.addWidget(self._lbl_poly_status)
 
-        # Wire camera connected/disconnected to freeze button
-        self._camera.connected.connect(lambda _: self._btn_freeze.setEnabled(True))
+        scale_row = QHBoxLayout()
+        self._btn_set_scale = QPushButton("Set Scale…")
+        self._btn_set_scale.setEnabled(False)
+        self._btn_set_scale.setToolTip(
+            "Click two points on a known object, then enter its real size in mm.\n"
+            "All curve coordinates will be reported in mm."
+        )
+        self._btn_set_scale.clicked.connect(self._on_set_scale)
+        scale_row.addWidget(self._btn_set_scale)
+
+        self._lbl_scale = QLabel("No scale set")
+        self._lbl_scale.setStyleSheet("color: #888; font-size: 10px;")
+        scale_row.addWidget(self._lbl_scale, stretch=1)
+        lay.addLayout(scale_row)
+
+        # For live cameras: enable Freeze Frame on connect.
+        # For image files: auto-freeze immediately (no "right moment" to pick).
+        self._camera.connected.connect(self._on_camera_connected)
         self._camera.disconnected.connect(lambda: self._btn_freeze.setEnabled(False))
 
         return grp
@@ -324,11 +342,27 @@ class CurveExtractionDialog(QDialog):
         export_row.addWidget(self._btn_export_npy)
         lay.addLayout(export_row)
 
+        self._btn_clear_result = QPushButton("Clear Result")
+        self._btn_clear_result.setEnabled(False)
+        self._btn_clear_result.setToolTip(
+            "Discard this result and go back to the initial snake overlay so you can re-run with different parameters."
+        )
+        self._btn_clear_result.clicked.connect(self._on_clear_result)
+        lay.addWidget(self._btn_clear_result)
+
         return grp
 
     # ------------------------------------------------------------------
     # Slots — polygon workflow
     # ------------------------------------------------------------------
+
+    @pyqtSlot(str)
+    def _on_camera_connected(self, _source: str):
+        if self._camera.source_type == 'image':
+            # Static image: skip manual freeze step — just freeze immediately
+            self._on_freeze()
+        else:
+            self._btn_freeze.setEnabled(True)
 
     @pyqtSlot()
     def _on_freeze(self):
@@ -384,10 +418,11 @@ class CurveExtractionDialog(QDialog):
 
     @pyqtSlot()
     def _on_clear_polygon(self):
+        self._initial_snake = None
         self._camera._preview.clear_polygon_pts()
         if self._frozen_bgr is not None:
+            # Restore the clean frozen frame (remove snake overlay)
             self._camera.freeze_preview(self._frozen_bgr)
-        self._initial_snake = None
         self._lbl_poly_status.setText("Polygon cleared. Click to add vertices.")
         self._update_button_states()
 
@@ -402,12 +437,48 @@ class CurveExtractionDialog(QDialog):
             return
         num_pts = self._sp_num_points.value()
         self._initial_snake = snk.initialize_snake_from_polygon(pts, num_points=num_pts)
-        self._camera._preview.disable_polygon_mode()
+        # Hide polygon overlay but keep vertices — user can add more and re-close.
+        self._camera._preview.hide_polygon_overlay()
         self._lbl_poly_status.setText(
-            f"Snake initialized: {len(self._initial_snake)} points from {len(pts)} vertices."
+            f"Snake ready: {len(self._initial_snake)} pts from {len(pts)} vertices. "
+            "Add more vertices or click Close Polygon again to update."
         )
         self._show_snake_overlay(self._initial_snake, color=(0, 212, 255))
         self._update_button_states()
+
+    # ------------------------------------------------------------------
+    # Slots — pixel/mm scale calibration
+    # ------------------------------------------------------------------
+
+    @pyqtSlot()
+    def _on_set_scale(self):
+        """Enter 2-point measurement mode; user clicks two points on a known object."""
+        self._lbl_scale.setText("Click first point…")
+        self._lbl_scale.setStyleSheet("color: #c4e49a; font-size: 10px;")
+        preview = self._camera._preview
+        preview.enable_measure_mode()
+        preview.measurement_done.connect(self._on_measurement_done)
+
+    @pyqtSlot(int, int, int, int)
+    def _on_measurement_done(self, x1: int, y1: int, x2: int, y2: int):
+        self._camera._preview.measurement_done.disconnect(self._on_measurement_done)
+        px_dist = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+        if px_dist < 1:
+            self._lbl_scale.setText("Points too close — try again.")
+            self._lbl_scale.setStyleSheet("color: #cc4444; font-size: 10px;")
+            return
+        mm_val, ok = QInputDialog.getDouble(
+            self, "Known distance",
+            f"Real distance between the two points (pixels: {px_dist:.1f}):",
+            decimals=3, min=0.001, max=100000.0, value=1.0,
+        )
+        if not ok or mm_val <= 0:
+            self._lbl_scale.setText("Scale cancelled.")
+            self._lbl_scale.setStyleSheet("color: #888; font-size: 10px;")
+            return
+        self._px_per_mm = px_dist / mm_val
+        self._lbl_scale.setText(f"{self._px_per_mm:.3f} px/mm")
+        self._lbl_scale.setStyleSheet("color: #6EBA31; font-size: 10px;")
 
     # ------------------------------------------------------------------
     # Slots — acquisition
@@ -418,9 +489,12 @@ class CurveExtractionDialog(QDialog):
         if self._initial_snake is None or not self._camera.is_connected:
             return
 
+        is_image = self._camera.source_type == 'image'
         config = CurveConfig(
             num_frames        = self._sp_frames.value(),
-            frame_interval_ms = self._sp_interval.value(),
+            # Static image has no real-time stream: disable interval throttle so all
+            # seeded copies of the frame are processed without artificial delays.
+            frame_interval_ms = 0 if is_image else self._sp_interval.value(),
             num_points        = self._sp_num_points.value(),
             num_iterations    = self._sp_iterations.value(),
             window_size       = self._sp_window.value(),
@@ -438,6 +512,7 @@ class CurveExtractionDialog(QDialog):
         self._thread.curve_extracted.connect(self._on_curve_extracted)
         self._thread.acquisition_complete.connect(self._on_acquisition_complete)
         self._thread.progress.connect(self._on_progress)
+        self._thread.iteration_update.connect(self._on_iteration_update)
         self._thread.error.connect(self._on_acq_error)
 
         self._progress.setMaximum(config.num_frames)
@@ -447,22 +522,43 @@ class CurveExtractionDialog(QDialog):
         self._btn_stop.setEnabled(True)
         self._thread.start()
 
+        # Image mode: no live stream — feed the frozen frame into the thread queue
+        # so the snake runs num_frames times on the same image.
+        if is_image and self._frozen_bgr is not None:
+            processed = apply_acquisition_pipeline(self._frozen_bgr, self._camera._config)
+            for _ in range(config.num_frames):
+                self._thread.on_frame(processed)
+
     @pyqtSlot()
     def _on_stop(self):
         if self._thread is not None:
-            result = self._thread.stop()
-            if result is not None:
-                self._store_result(result)
-        self._reset_acq_controls()
+            self._thread.request_stop()
+            self._btn_stop.setEnabled(False)
+            # Result (or error) arrives via acquisition_complete / error signals,
+            # which call _reset_acq_controls — no blocking wait here.
 
     @pyqtSlot(object)
     def _on_curve_extracted(self, curve: np.ndarray):
-        self._show_snake_overlay(curve, color=(255, 64, 64))
+        self._show_snake_overlay(curve, color=(0, 0, 255))
+
+    @pyqtSlot(int, int, object, float)
+    def _on_iteration_update(self, frame: int, iteration: int,
+                             snake: np.ndarray, improvement: float):
+        total_frames = self._sp_frames.value()
+        converged    = improvement < self._sp_threshold.value()
+        if converged:
+            status = (f"Frame {frame + 1} / {total_frames}"
+                      f"  ·  converged @ iter {iteration + 1}")
+        else:
+            status = (f"Frame {frame + 1} / {total_frames}"
+                      f"  ·  iter {iteration + 1}  Δ={improvement:.5f}")
+        self._lbl_acq_status.setText(status)
+        # Orange in BGR while iterating; overwritten with red when frame completes
+        self._show_snake_overlay(snake, color=(0, 140, 255))
 
     @pyqtSlot(int, int)
     def _on_progress(self, current: int, total: int):
         self._progress.setValue(current)
-        self._lbl_acq_status.setText(f"Frame {current} / {total}")
 
     @pyqtSlot(object)
     def _on_acquisition_complete(self, result: CurveResult):
@@ -473,6 +569,21 @@ class CurveExtractionDialog(QDialog):
     def _on_acq_error(self, msg: str):
         self._lbl_acq_status.setText(f"Error: {msg}")
         self._reset_acq_controls()
+
+    @pyqtSlot()
+    def _on_clear_result(self):
+        """Discard the acquisition result; show the initial snake so parameters can be tweaked and re-run."""
+        self.result = None
+        self._lbl_result.setText("Result cleared.")
+        self._lbl_result.setStyleSheet("color: #888; font-size: 10px;")
+        self._btn_export_csv.setEnabled(False)
+        self._btn_export_npy.setEnabled(False)
+        self._btn_clear_result.setEnabled(False)
+        self._btn_accept.setEnabled(False)
+        self._lbl_acq_status.setText("Set up polygon, then press Start.")
+        if self._initial_snake is not None:
+            self._show_snake_overlay(self._initial_snake, color=(0, 212, 255))
+        self._update_button_states()
 
     # ------------------------------------------------------------------
     # Slots — dialog
@@ -532,13 +643,19 @@ class CurveExtractionDialog(QDialog):
         self.result = result
         f, n = result.curves.shape[0], result.curves.shape[1]
         mean_std = result.std_per_point.mean()
+        if self._px_per_mm is not None:
+            mean_std_mm = mean_std / self._px_per_mm
+            spread_str = f"{mean_std:.2f} px  ({mean_std_mm:.3f} mm)"
+        else:
+            spread_str = f"{mean_std:.2f} px"
         self._lbl_result.setText(
-            f"{f} frames  ·  {n} points  ·  mean spread: {mean_std:.2f} px"
+            f"{f} frames  ·  {n} points  ·  mean spread: {spread_str}"
         )
         self._lbl_result.setStyleSheet("color: #6EBA31; font-size: 10px;")
-        self._show_snake_overlay(result.mean_curve, color=(110, 186, 49))
+        self._show_snake_overlay(result.mean_curve, color=(0, 0, 255))
         self._btn_export_csv.setEnabled(True)
         self._btn_export_npy.setEnabled(True)
+        self._btn_clear_result.setEnabled(True)
         self._btn_accept.setEnabled(True)
         self._update_button_states()
 
@@ -561,6 +678,7 @@ class CurveExtractionDialog(QDialog):
         self._btn_freeze.setEnabled(connected and not frozen and not running)
         self._btn_start.setEnabled(has_snake and connected and not running)
         self._btn_accept.setEnabled(self.result is not None)
+        self._btn_set_scale.setEnabled(frozen and not running)
 
     def _export(self, fmt: str):
         if self.result is None:
@@ -576,8 +694,16 @@ class CurveExtractionDialog(QDialog):
             import csv
             with open(path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['x', 'y'])
-                writer.writerows(self.result.mean_curve.tolist())
+                has_scale = self._px_per_mm is not None
+                if has_scale:
+                    writer.writerow(['x_px', 'y_px', 'x_mm', 'y_mm'])
+                    for x, y in self.result.mean_curve.tolist():
+                        writer.writerow([x, y,
+                                         x / self._px_per_mm,
+                                         y / self._px_per_mm])
+                else:
+                    writer.writerow(['x', 'y'])
+                    writer.writerows(self.result.mean_curve.tolist())
         else:
             path, _ = QFileDialog.getSaveFileName(
                 self, "Export all curves as NPY",
@@ -647,6 +773,7 @@ class CurveExtractionDialog(QDialog):
 
     def closeEvent(self, event):
         if self._thread is not None and self._thread.isRunning():
-            self._thread.stop()
+            self._thread.request_stop()
+            self._thread.wait(2000)
         self._camera._stop_thread()
         super().closeEvent(event)
